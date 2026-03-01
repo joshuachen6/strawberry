@@ -1217,6 +1217,7 @@ void MainWindow::ReloadSettings() {
   ui_->stop_button->setIconSize(QSize(iconsize, iconsize));
   ui_->forward_button->setIconSize(QSize(iconsize, iconsize));
   ui_->button_love->setIconSize(QSize(iconsize, iconsize));
+  ui_->playlist_sequence->setIconSize(QSize(iconsize, iconsize));
 
   s.beginGroup(BackendSettings::kSettingsGroup);
   bool volume_control = s.value("volume_control", true).toBool();

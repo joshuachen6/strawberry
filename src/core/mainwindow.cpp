@@ -915,6 +915,7 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(this, &MainWindow::AlbumCoverReady, context_view_, &ContextView::AlbumCoverLoaded);
   QObject::connect(this, &MainWindow::SearchCoverInProgress, context_view_->album_widget(), &ContextAlbum::SearchCoverInProgress);
   QObject::connect(context_view_, &ContextView::AlbumEnabledChanged, this, &MainWindow::TabSwitched);
+  QObject::connect(context_view_, &ContextView::SeekRequested, &*app_->player(), &Player::SeekTo);
 
   // Analyzer
   QObject::connect(ui_->analyzer, &AnalyzerContainer::WheelEvent, this, &MainWindow::VolumeWheelEvent);
@@ -1837,6 +1838,7 @@ void MainWindow::UpdateTrackSliderPosition() {
 
   // Update the slider
   ui_->track_slider->SetValue(slider_position, slider_length);
+  context_view_->UpdateTrackPosition(app_->player()->engine()->position_nanosec());
 
 }
 

@@ -49,7 +49,7 @@ void OVHLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &req
 
   Q_ASSERT(QThread::currentThread() != qApp->thread());
 
-  const QUrl url(QLatin1String(kUrlSearch) + QString::fromLatin1(QUrl::toPercentEncoding(request.artist)) + '/'_L1 + QString::fromLatin1(QUrl::toPercentEncoding(request.title)));
+  const QUrl url(QLatin1String(kUrlSearch) + QString::fromLatin1(QUrl::toPercentEncoding(request.song.artist())) + '/'_L1 + QString::fromLatin1(QUrl::toPercentEncoding(request.song.title())));
   QNetworkReply *reply = CreateGetRequest(url);
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, id, request]() { HandleSearchReply(reply, id, request); });
 
@@ -125,7 +125,7 @@ void OVHLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id, co
 
   if (json_object.contains("error"_L1)) {
     Error(json_object["error"_L1].toString());
-    qLog(Debug) << "OVHLyrics: No lyrics for" << request.artist << request.title;
+    qLog(Debug) << "OVHLyrics: No lyrics for" << request.song.artist() << request.song.title();
     return;
   }
 
@@ -136,10 +136,10 @@ void OVHLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id, co
   const QString lyrics = json_object["lyrics"_L1].toString();
 
   if (lyrics.isEmpty()) {
-    qLog(Debug) << "OVHLyrics: No lyrics for" << request.artist << request.title;
+    qLog(Debug) << "OVHLyrics: No lyrics for" << request.song.artist() << request.song.title();
   }
   else {
-    qLog(Debug) << "OVHLyrics: Got lyrics for" << request.artist << request.title;
+    qLog(Debug) << "OVHLyrics: Got lyrics for" << request.song.artist() << request.song.title();
     results << LyricsSearchResult(Utilities::DecodeHtmlEntities(lyrics));
   }
 

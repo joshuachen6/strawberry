@@ -218,6 +218,7 @@ ContextView::ContextView(QWidget *parent)
 
   QObject::connect(widget_album_, &ContextAlbum::FadeStopFinished, this, &ContextView::FadeStopFinished);
 
+  textedit_play_lyrics_->viewport()->installEventFilter(this);
 }
 
 void ContextView::Init(CollectionView *collectionview, AlbumCoverChoiceController *album_cover_choice_controller, SharedPtr<LyricsProviders> lyrics_providers) {
@@ -339,7 +340,7 @@ void ContextView::SongChanged(const Song &song) {
   else {
     song_prev_ = song_playing_;
     song_playing_ = song;
-    lyrics_ = song.lyrics();
+    SetLyrics(song.lyrics());
     lyrics_id_ = -1;
     lyrics_tried_ = false;
     SetSong();
@@ -354,7 +355,7 @@ void ContextView::SearchLyrics() {
   if (lyrics_.isEmpty() && action_show_lyrics_->isChecked() && action_search_lyrics_->isChecked() && !song_playing_.artist().isEmpty() && !song_playing_.title().isEmpty() && !lyrics_tried_ && lyrics_id_ == -1) {
     lyrics_fetcher_->Clear();
     lyrics_tried_ = true;
-    lyrics_id_ = static_cast<qint64>(lyrics_fetcher_->Search(song_playing_.effective_albumartist(), song_playing_.artist(), song_playing_.album(), song_playing_.title(), song_playing_.length_nanosec() / kNsecPerSec));
+    lyrics_id_ = static_cast<qint64>(lyrics_fetcher_->Search(song_playing_));
   }
 
 }
@@ -586,12 +587,78 @@ void ContextView::UpdateLyrics(const quint64 id, const QString &provider, const 
   if (static_cast<qint64>(id) != lyrics_id_) return;
 
   if (lyrics.isEmpty()) {
+    synced_lyrics_.clear();
+    current_synced_line_ = -1;
     lyrics_ = "No lyrics found.\n"_L1;
-  }
-  else {
-    lyrics_ = lyrics + "\n\n(Lyrics from "_L1 + provider + ")\n"_L1;
+    if (action_show_lyrics_->isChecked()) {
+      textedit_play_lyrics_->SetText(lyrics_);
+      textedit_play_lyrics_->show();
+    } else {
+      textedit_play_lyrics_->clear();
+      textedit_play_lyrics_->hide();
+    }
+  } else {
+    SetLyrics(lyrics, provider);
   }
   lyrics_id_ = -1;
+
+}
+
+void ContextView::SetLyrics(const QString &lyrics, const QString &provider) {
+
+  synced_lyrics_.clear();
+  current_synced_line_ = -1;
+
+  if (lyrics.isEmpty()) {
+    lyrics_.clear();
+  }
+  else {
+    QRegularExpression re(u"\\[(\\d+):(\\d{2})(?:\\.(\\d{2,3}))?\\]"_s);
+    QStringList lines = lyrics.split(u'\n');
+    bool is_synced = false;
+    
+    for (const QString &line : std::as_const(lines)) {
+      QList<qint64> timestamps;
+      QString text = line;
+      QRegularExpressionMatchIterator i = re.globalMatch(line);
+      while (i.hasNext()) {
+        QRegularExpressionMatch match = i.next();
+        int min = match.captured(1).toInt();
+        int sec = match.captured(2).toInt();
+        int msec = match.captured(3).isEmpty() ? 0 : match.captured(3).leftJustified(3, u'0').toInt();
+        qint64 ts_nsec = (min * 60LL * 1000 + sec * 1000LL + msec) * 1000000LL;
+        timestamps.append(ts_nsec);
+        text.remove(match.captured(0));
+      }
+      
+      if (!timestamps.isEmpty()) {
+        is_synced = true;
+        for (qint64 ts : std::as_const(timestamps)) {
+          synced_lyrics_.append({ts, text, 0});
+        }
+      }
+    }
+
+    if (is_synced && !synced_lyrics_.isEmpty()) {
+      std::stable_sort(synced_lyrics_.begin(), synced_lyrics_.end(), [](const SyncedLyric& a, const SyncedLyric& b) {
+          return a.timestamp_nsec < b.timestamp_nsec;
+      });
+      QString clean_lyrics;
+      int block_idx = 0;
+      for (SyncedLyric& sl : synced_lyrics_) {
+         sl.block_idx = block_idx++;
+         clean_lyrics += sl.text + u'\n';
+      }
+      lyrics_ = clean_lyrics.trimmed();
+    } else {
+      synced_lyrics_.clear();
+      lyrics_ = lyrics.trimmed();
+    }
+    
+    if (!provider.isEmpty()) {
+      lyrics_ += "\n\n(Lyrics from "_L1 + provider + ")\n"_L1;
+    }
+  }
 
   if (action_show_lyrics_->isChecked() && !lyrics_.isEmpty()) {
     textedit_play_lyrics_->SetText(lyrics_);
@@ -602,6 +669,44 @@ void ContextView::UpdateLyrics(const quint64 id, const QString &provider, const 
     textedit_play_lyrics_->hide();
   }
 
+}
+
+void ContextView::UpdateTrackPosition(qint64 nanoseconds) {
+
+  if (synced_lyrics_.isEmpty() || !textedit_play_lyrics_->isVisible()) return;
+
+  int active_line = -1;
+  for (int i = 0; i < synced_lyrics_.size(); ++i) {
+    if (nanoseconds >= synced_lyrics_[i].timestamp_nsec) {
+      active_line = i;
+    } else {
+      break;
+    }
+  }
+
+  if (active_line != current_synced_line_) {
+    current_synced_line_ = active_line;
+    if (active_line >= 0) {
+      QList<QTextEdit::ExtraSelection> selections;
+      QTextEdit::ExtraSelection selection;
+      selection.format.setForeground(palette().highlight());
+      selection.format.setFontWeight(QFont::Bold);
+
+      QTextCursor cursor = textedit_play_lyrics_->textCursor();
+      cursor.movePosition(QTextCursor::Start);
+      cursor.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, synced_lyrics_[active_line].block_idx);
+      cursor.select(QTextCursor::LineUnderCursor);
+      selection.cursor = cursor;
+      selections.append(selection);
+      textedit_play_lyrics_->setExtraSelections(selections);
+
+      QRect rect = textedit_play_lyrics_->cursorRect(cursor);
+      int y = textedit_play_lyrics_->mapTo(widget_scrollarea_, rect.topLeft()).y();
+      scrollarea_->ensureVisible(0, y + rect.height() / 2, 50, 50);
+    } else {
+      textedit_play_lyrics_->setExtraSelections(QList<QTextEdit::ExtraSelection>());
+    }
+  }
 }
 
 void ContextView::contextMenuEvent(QContextMenuEvent *e) {
@@ -689,5 +794,26 @@ void ContextView::ActionSearchLyrics() {
   if (song_playing_.is_valid()) SetSong();
 
   SearchLyrics();
+
+}
+
+bool ContextView::eventFilter(QObject *obj, QEvent *e) {
+
+  if (obj == textedit_play_lyrics_->viewport() && e->type() == QEvent::MouseButtonRelease) {
+    QMouseEvent *me = static_cast<QMouseEvent*>(e);
+    if (me->button() == Qt::LeftButton && !synced_lyrics_.isEmpty() && song_playing_.is_valid()) {
+      QTextCursor cursor = textedit_play_lyrics_->cursorForPosition(me->pos());
+      int block = cursor.blockNumber();
+      for (const SyncedLyric &sl : std::as_const(synced_lyrics_)) {
+        if (sl.block_idx == block) {
+          quint64 seconds = std::round(static_cast<double>(sl.timestamp_nsec) / 1000000000.0);
+          Q_EMIT SeekRequested(seconds);
+          break;
+        }
+      }
+    }
+  }
+
+  return QWidget::eventFilter(obj, e);
 
 }

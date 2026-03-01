@@ -79,8 +79,8 @@ bool MusixmatchLyricsProvider::SendSearchRequest(LyricsSearchContextPtr search) 
   const QUrl url(QLatin1String(kApiUrl) + "/track.search"_L1);
   QUrlQuery url_query;
   url_query.addQueryItem(u"apikey"_s, QString::fromLatin1(QByteArray::fromBase64(kApiKey)));
-  url_query.addQueryItem(u"q_artist"_s, QString::fromLatin1(QUrl::toPercentEncoding(search->request.artist)));
-  url_query.addQueryItem(u"q_track"_s, QString::fromLatin1(QUrl::toPercentEncoding(search->request.title)));
+  url_query.addQueryItem(u"q_artist"_s, QString::fromLatin1(QUrl::toPercentEncoding(search->request.song.artist())));
+  url_query.addQueryItem(u"q_track"_s, QString::fromLatin1(QUrl::toPercentEncoding(search->request.song.title())));
   url_query.addQueryItem(u"f_has_lyrics"_s, u"1"_s);
   QNetworkReply *reply = CreateGetRequest(url, url_query);
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, search]() { HandleSearchReply(reply, search); });
@@ -259,10 +259,10 @@ void MusixmatchLyricsProvider::HandleSearchReply(QNetworkReply *reply, LyricsSea
 
     // Ignore results where both the artist, album and title don't match.
     if (use_api_ &&
-        artist_name.compare(search->request.albumartist, Qt::CaseInsensitive) != 0 &&
-        artist_name.compare(search->request.artist, Qt::CaseInsensitive) != 0 &&
-        album_name.compare(search->request.album, Qt::CaseInsensitive) != 0 &&
-        track_name.compare(search->request.title, Qt::CaseInsensitive) != 0) {
+        artist_name.compare(search->request.song.albumartist(), Qt::CaseInsensitive) != 0 &&
+        artist_name.compare(search->request.song.artist(), Qt::CaseInsensitive) != 0 &&
+        album_name.compare(search->request.song.album(), Qt::CaseInsensitive) != 0 &&
+        track_name.compare(search->request.song.title(), Qt::CaseInsensitive) != 0) {
       continue;
     }
 
@@ -281,8 +281,8 @@ void MusixmatchLyricsProvider::HandleSearchReply(QNetworkReply *reply, LyricsSea
 
 bool MusixmatchLyricsProvider::CreateLyricsRequest(LyricsSearchContextPtr search) {
 
-  const QString artist_stripped = StringFixup(search->request.artist);
-  const QString title_stripped = StringFixup(search->request.title);
+  const QString artist_stripped = StringFixup(search->request.song.artist());
+  const QString title_stripped = StringFixup(search->request.song.title());
   if (artist_stripped.isEmpty() || title_stripped.isEmpty()) {
     EndSearch(search);
     return false;
@@ -436,10 +436,10 @@ void MusixmatchLyricsProvider::EndSearch(LyricsSearchContextPtr search, const QU
   if (search->requests_lyrics_.count() == 0) {
     requests_search_.removeAll(search);
     if (search->results.isEmpty()) {
-      qLog(Debug) << "MusixmatchLyrics: No lyrics for" << search->request.artist << search->request.title;
+      qLog(Debug) << "MusixmatchLyrics: No lyrics for" << search->request.song.artist() << search->request.song.title();
     }
     else {
-      qLog(Debug) << "MusixmatchLyrics: Got lyrics for" << search->request.artist << search->request.title;
+      qLog(Debug) << "MusixmatchLyrics: Got lyrics for" << search->request.song.artist() << search->request.song.title();
     }
     Q_EMIT SearchFinished(search->id, search->results);
   }

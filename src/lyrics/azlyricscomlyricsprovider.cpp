@@ -43,7 +43,7 @@ AzLyricsComLyricsProvider::AzLyricsComLyricsProvider(const SharedPtr<NetworkAcce
 
 QUrl AzLyricsComLyricsProvider::Url(const LyricsSearchRequest &request) {
 
-  return QUrl(QLatin1String(kUrl) + StringFixup(request.artist) + QLatin1Char('/') + StringFixup(request.title) + u".html"_s);
+  return QUrl(QLatin1String(kUrl) + StringFixup(request.song.artist()) + QLatin1Char('/') + StringFixup(request.song.title()) + u".html"_s);
 
 }
 

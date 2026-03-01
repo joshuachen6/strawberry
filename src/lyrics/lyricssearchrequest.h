@@ -24,14 +24,12 @@
 #include <QString>
 #include <QMetaType>
 
+#include "core/song.h"
+
 class LyricsSearchRequest {
  public:
-  explicit LyricsSearchRequest() : duration(-1) {}
-  QString albumartist;
-  QString artist;
-  QString album;
-  QString title;
-  qint64 duration;
+  explicit LyricsSearchRequest() {}
+  Song song;
 };
 
 Q_DECLARE_METATYPE(LyricsSearchRequest)

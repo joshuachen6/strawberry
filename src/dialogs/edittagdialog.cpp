@@ -1590,7 +1590,7 @@ void EditTagDialog::FetchLyrics() {
   const Song song = data_.value(ui_->song_list->selectionModel()->selectedIndexes().first().row()).current_;
   lyrics_fetcher_->Clear();
   ui_->lyrics->setPlainText(tr("loading..."));
-  lyrics_id_ = static_cast<qint64>(lyrics_fetcher_->Search(song.effective_albumartist(), song.artist(), song.album(), song.title(), song.length_nanosec() / kNsecPerSec));
+  lyrics_id_ = static_cast<qint64>(lyrics_fetcher_->Search(song));
 
 }
 

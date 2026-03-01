@@ -51,8 +51,8 @@ void LoloLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &re
   Q_ASSERT(QThread::currentThread() != qApp->thread());
 
   QUrlQuery url_query;
-  url_query.addQueryItem(u"artist"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.artist)));
-  url_query.addQueryItem(u"track"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.title)));
+  url_query.addQueryItem(u"artist"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.song.artist())));
+  url_query.addQueryItem(u"track"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.song.title())));
 
   QNetworkReply *reply = CreateGetRequest(QUrl(QLatin1String(kUrlSearch)), url_query);
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, id, request]() { HandleSearchReply(reply, id, request); });
@@ -115,10 +115,10 @@ void LoloLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id, c
   }
 
   if (results.isEmpty()) {
-    qLog(Debug) << "LoloLyrics: No lyrics for" << request.artist << request.title << error_message;
+    qLog(Debug) << "LoloLyrics: No lyrics for" << request.song.artist() << request.song.title() << error_message;
   }
   else {
-    qLog(Debug) << "LoloLyrics: Got lyrics for" << request.artist << request.title;
+    qLog(Debug) << "LoloLyrics: Got lyrics for" << request.song.artist() << request.song.title();
   }
 
 }

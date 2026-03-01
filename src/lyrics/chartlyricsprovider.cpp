@@ -51,8 +51,8 @@ void ChartLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &r
   Q_ASSERT(QThread::currentThread() != qApp->thread());
 
   QUrlQuery url_query;
-  url_query.addQueryItem(u"artist"_s, QString::fromUtf8(QUrl::toPercentEncoding(request.artist)));
-  url_query.addQueryItem(u"song"_s, QString::fromUtf8(QUrl::toPercentEncoding(request.title)));
+  url_query.addQueryItem(u"artist"_s, QString::fromUtf8(QUrl::toPercentEncoding(request.song.artist())));
+  url_query.addQueryItem(u"song"_s, QString::fromUtf8(QUrl::toPercentEncoding(request.song.title())));
 
   QNetworkReply *reply = CreateGetRequest(QUrl(QLatin1String(kUrlSearch)), url_query);
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, id, request]() { HandleSearchReply(reply, id, request); });
@@ -97,9 +97,9 @@ void ChartLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id, 
     else if (type == QXmlStreamReader::EndElement) {
       if (name == "GetLyricResult"_L1) {
         if (!result.artist.isEmpty() && !result.title.isEmpty() && !result.lyrics.isEmpty() &&
-            (result.artist.compare(request.albumartist, Qt::CaseInsensitive) == 0 ||
-             result.artist.compare(request.artist, Qt::CaseInsensitive) == 0 ||
-             result.title.compare(request.title, Qt::CaseInsensitive) == 0)) {
+            (result.artist.compare(request.song.albumartist(), Qt::CaseInsensitive) == 0 ||
+             result.artist.compare(request.song.artist(), Qt::CaseInsensitive) == 0 ||
+             result.title.compare(request.song.title(), Qt::CaseInsensitive) == 0)) {
           result.lyrics = Utilities::DecodeHtmlEntities(result.lyrics);
           results << result;
         }
@@ -109,10 +109,10 @@ void ChartLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id, 
   }
 
   if (results.isEmpty()) {
-    qLog(Debug) << "ChartLyrics: No lyrics for" << request.artist << request.title;
+    qLog(Debug) << "ChartLyrics: No lyrics for" << request.song.artist() << request.song.title();
   }
   else {
-    qLog(Debug) << "ChartLyrics: Got lyrics for" << request.artist << request.title;
+    qLog(Debug) << "ChartLyrics: Got lyrics for" << request.song.artist() << request.song.title();
   }
 
 }

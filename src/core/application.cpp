@@ -75,6 +75,7 @@
 #include "lyrics/letraslyricsprovider.h"
 #include "lyrics/lyricfindlyricsprovider.h"
 #include "lyrics/lrcliblyricsprovider.h"
+#include "lyrics/locallrcprovider.h"
 
 #include "scrobbler/audioscrobbler.h"
 #include "scrobbler/lastfmscrobbler.h"
@@ -173,6 +174,7 @@ class ApplicationImpl {
         lyrics_providers_([app]() {
           LyricsProviders *lyrics_providers = new LyricsProviders(app);
           // Initialize the repository of lyrics providers.
+          lyrics_providers->AddProvider(new LocalLRCProvider(app));
           lyrics_providers->AddProvider(new GeniusLyricsProvider(lyrics_providers->network()));
           lyrics_providers->AddProvider(new OVHLyricsProvider(lyrics_providers->network()));
           lyrics_providers->AddProvider(new LoloLyricsProvider(lyrics_providers->network()));

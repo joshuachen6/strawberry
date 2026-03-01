@@ -49,14 +49,10 @@ LyricsFetcher::LyricsFetcher(const SharedPtr<LyricsProviders> lyrics_providers, 
 
 }
 
-quint64 LyricsFetcher::Search(const QString &effective_albumartist, const QString &artist, const QString &album, const QString &title, const qint64 duration) {
+quint64 LyricsFetcher::Search(const Song &song) {
 
   LyricsSearchRequest search_request;
-  search_request.albumartist = effective_albumartist;
-  search_request.artist = artist;
-  search_request.album = Song::AlbumRemoveDiscMisc(album);
-  search_request.title = Song::TitleRemoveMisc(title);
-  search_request.duration = duration;
+  search_request.song = song;
 
   Request request;
   request.id = ++next_id_;

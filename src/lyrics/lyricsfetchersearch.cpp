@@ -68,7 +68,7 @@ void LyricsFetcherSearch::CancelRequests() {
 void LyricsFetcherSearch::Start(SharedPtr<LyricsProviders> lyrics_providers) {
 
   // Ignore Radio Paradise "commercial" break.
-  if (request_.artist.compare("commercial-free"_L1, Qt::CaseInsensitive) == 0 && request_.title.compare("listener-supported"_L1, Qt::CaseInsensitive) == 0) {
+  if (request_.song.artist().compare("commercial-free"_L1, Qt::CaseInsensitive) == 0 && request_.song.title().compare("listener-supported"_L1, Qt::CaseInsensitive) == 0) {
     FinishSearch();
     return;
   }
@@ -104,20 +104,22 @@ void LyricsFetcherSearch::ProviderSearchFinished(const int id, const LyricsSearc
   float higest_score = 0.0;
   for (int i = 0; i < results_copy.count(); ++i) {
     results_copy[i].provider = provider->name();
-    results_copy[i].score = 0.0;
-    if (results_copy[i].artist.compare(request_.albumartist, Qt::CaseInsensitive) == 0 || results_copy[i].artist.compare(request_.artist, Qt::CaseInsensitive) == 0) {
-      results_copy[i].score += 0.5;
+    // Do not reset score to 0.0 if the provider already set one
+    if (results_copy[i].score == 0.0) {
+      if (results_copy[i].artist.compare(request_.song.albumartist(), Qt::CaseInsensitive) == 0 || results_copy[i].artist.compare(request_.song.artist(), Qt::CaseInsensitive) == 0) {
+        results_copy[i].score += 0.5;
+      }
+      if (results_copy[i].album.compare(request_.song.album(), Qt::CaseInsensitive) == 0) {
+        results_copy[i].score += 0.5;
+      }
+      if (results_copy[i].title.compare(request_.song.title(), Qt::CaseInsensitive) == 0) {
+        results_copy[i].score += 0.5;
+      }
+      if (results_copy[i].artist.compare(request_.song.artist(), Qt::CaseInsensitive) != 0 && results_copy[i].title.compare(request_.song.title(), Qt::CaseInsensitive) != 0) {
+        results_copy[i].score -= 1.5;
+      }
+      if (results_copy[i].lyrics.length() > kGoodLyricsLength) results_copy[i].score += 1.0;
     }
-    if (results_copy[i].album.compare(request_.album, Qt::CaseInsensitive) == 0) {
-      results_copy[i].score += 0.5;
-    }
-    if (results_copy[i].title.compare(request_.title, Qt::CaseInsensitive) == 0) {
-      results_copy[i].score += 0.5;
-    }
-    if (results_copy[i].artist.compare(request_.artist, Qt::CaseInsensitive) != 0 && results_copy[i].title.compare(request_.title, Qt::CaseInsensitive) != 0) {
-      results_copy[i].score -= 1.5;
-    }
-    if (results_copy[i].lyrics.length() > kGoodLyricsLength) results_copy[i].score += 1.0;
     if (results_copy[i].score > higest_score) higest_score = results_copy[i].score;
   }
 
@@ -126,7 +128,7 @@ void LyricsFetcherSearch::ProviderSearchFinished(const int id, const LyricsSearc
 
   if (!pending_requests_.isEmpty()) {
     if (!results_.isEmpty() && higest_score >= kHighScore) {  // Highest score, no need to wait for other providers.
-      qLog(Debug) << "Got lyrics with high score from" << results_.last().provider << "for" << request_.artist << request_.title << "score" << results_.last().score << "finishing search.";
+      qLog(Debug) << "Got lyrics with high score from" << results_.last().provider << "for" << request_.song.artist() << request_.song.title() << "score" << results_.last().score << "finishing search.";
       FinishSearch();
     }
     return;
@@ -140,7 +142,7 @@ void LyricsFetcherSearch::SearchTimeout() {
 
   if (finished_) return;
 
-  qLog(Debug) << "Lyrics search for" << request_.artist << request_.album << request_.title << "timed out for remaining" << pending_requests_.count() << "providers";
+  qLog(Debug) << "Lyrics search for" << request_.song.artist() << request_.song.album() << request_.song.title() << "timed out for remaining" << pending_requests_.count() << "providers";
 
   FinishSearch();
 
@@ -159,11 +161,11 @@ void LyricsFetcherSearch::FinishSearch() {
   }
 
   if (results_.isEmpty()) {
-    qLog(Debug) << "No lyrics for" << request_.artist << request_.title;
+    qLog(Debug) << "No lyrics for" << request_.song.artist() << request_.song.title();
     Q_EMIT LyricsFetched(id_);
   }
   else {
-    qLog(Debug) << "Using lyrics from" << results_.last().provider << "for" << request_.artist << request_.title << "with score" << results_.last().score;
+    qLog(Debug) << "Using lyrics from" << results_.last().provider << "for" << request_.song.artist() << request_.song.title() << "with score" << results_.last().score;
     Q_EMIT LyricsFetched(id_, results_.constLast().provider, results_.constLast().lyrics);
   }
 

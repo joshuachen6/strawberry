@@ -43,7 +43,7 @@ HtmlLyricsProvider::HtmlLyricsProvider(const QString &name, const bool enabled, 
 
 bool HtmlLyricsProvider::StartSearchAsync(const int id, const LyricsSearchRequest &request) {
 
-  if (request.artist.isEmpty() || request.title.isEmpty()) return false;
+  if (request.song.artist().isEmpty() || request.song.title().isEmpty()) return false;
 
   QMetaObject::invokeMethod(this, "StartSearch", Qt::QueuedConnection, Q_ARG(int, id), Q_ARG(LyricsSearchRequest, request));
 
@@ -81,7 +81,7 @@ void HtmlLyricsProvider::HandleLyricsReply(QNetworkReply *reply, const int id, c
       reply->readAll(); // QTBUG-135641
     }
     if (reply->error() == QNetworkReply::ContentNotFoundError) {
-      qLog(Debug) << name_ << "No lyrics for" << request.artist << request.album << request.title;
+      qLog(Debug) << name_ << "No lyrics for" << request.song.artist() << request.song.album() << request.song.title();
     }
     else {
       qLog(Error) << name_ << reply->errorString() << reply->error();
@@ -106,11 +106,11 @@ void HtmlLyricsProvider::HandleLyricsReply(QNetworkReply *reply, const int id, c
 
   const QString lyrics = ParseLyricsFromHTML(QString::fromUtf8(data), QRegularExpression(start_tag_), QRegularExpression(end_tag_), QRegularExpression(lyrics_start_), multiple_);
   if (lyrics.isEmpty() || lyrics.contains("we do not have the lyrics for"_L1, Qt::CaseInsensitive)) {
-    qLog(Debug) << name_ << "No lyrics for" << request.artist << request.album << request.title;
+    qLog(Debug) << name_ << "No lyrics for" << request.song.artist() << request.song.album() << request.song.title();
     return;
   }
 
-  qLog(Debug) << name_ << "Got lyrics for" << request.artist << request.album << request.title;
+  qLog(Debug) << name_ << "Got lyrics for" << request.song.artist() << request.song.album() << request.song.title();
 
   results << LyricsSearchResult(lyrics);
 

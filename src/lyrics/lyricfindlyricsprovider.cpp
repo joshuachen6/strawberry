@@ -49,7 +49,7 @@ LyricFindLyricsProvider::LyricFindLyricsProvider(const SharedPtr<NetworkAccessMa
 
 QUrl LyricFindLyricsProvider::Url(const LyricsSearchRequest &request) {
 
-  return QUrl(QLatin1String(kUrl) + QLatin1Char('/') + StringFixup(request.artist) + QLatin1Char('-') + StringFixup(request.title));
+  return QUrl(QLatin1String(kUrl) + QLatin1Char('/') + StringFixup(request.song.artist()) + QLatin1Char('-') + StringFixup(request.song.title()));
 
 }
 
@@ -187,10 +187,10 @@ void LyricFindLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int 
 void LyricFindLyricsProvider::EndSearch(const int id, const LyricsSearchRequest &request, const LyricsSearchResults &results) {
 
   if (results.isEmpty()) {
-    qLog(Debug) << "LyricFind: No lyrics for" << request.artist << request.title;
+    qLog(Debug) << "LyricFind: No lyrics for" << request.song.artist() << request.song.title();
   }
   else {
-    qLog(Debug) << "LyricFind: Got lyrics for" << request.artist << request.title;
+    qLog(Debug) << "LyricFind: Got lyrics for" << request.song.artist() << request.song.title();
   }
 
   Q_EMIT SearchFinished(id, results);

@@ -43,7 +43,7 @@ ElyricsNetLyricsProvider::ElyricsNetLyricsProvider(const SharedPtr<NetworkAccess
 
 QUrl ElyricsNetLyricsProvider::Url(const LyricsSearchRequest &request) {
 
-  return QUrl(QLatin1String(kUrl) + request.artist[0].toLower() + QLatin1Char('/') + StringFixup(request.artist) + "-lyrics/"_L1 + StringFixup(request.title) + "-lyrics.html"_L1);
+  return QUrl(QLatin1String(kUrl) + request.song.artist()[0].toLower() + QLatin1Char('/') + StringFixup(request.song.artist()) + "-lyrics/"_L1 + StringFixup(request.song.title()) + "-lyrics.html"_L1);
 
 }
 

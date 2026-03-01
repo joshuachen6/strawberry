@@ -141,7 +141,7 @@ void GeniusLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &
   requests_search_.insert(id, search);
 
   QUrlQuery url_query;
-  url_query.addQueryItem(u"q"_s, QString::fromLatin1(QUrl::toPercentEncoding(QStringLiteral("%1 %2").arg(request.artist, request.title))));
+  url_query.addQueryItem(u"q"_s, QString::fromLatin1(QUrl::toPercentEncoding(QStringLiteral("%1 %2").arg(request.song.artist(), request.song.title()))));
 
   QNetworkReply *reply = CreateGetRequest(QUrl(QLatin1String(kUrlSearch)), url_query);
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, id]() { HandleSearchReply(reply, id); });
@@ -303,7 +303,7 @@ void GeniusLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id)
     const QString title = object_result["title"_L1].toString();
 
     // Ignore results where the artist or title don't begin or end the same
-    if (!StartsOrEndsMatch(artist, search->request.artist) || !StartsOrEndsMatch(title, search->request.title)) {
+    if (!StartsOrEndsMatch(artist, search->request.song.artist()) || !StartsOrEndsMatch(title, search->request.song.title())) {
       continue;
     }
 
@@ -324,7 +324,7 @@ void GeniusLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id)
     qLog(Debug) << name_ << "Sending request for" << url;
 
     // If full match, don't bother iterating further
-    if (artist == search->request.albumartist && artist == search->request.artist && title == search->request.title) {
+    if (artist == search->request.song.albumartist() && artist == search->request.song.artist() && title == search->request.song.title()) {
       break;
     }
   }
@@ -405,10 +405,10 @@ void GeniusLyricsProvider::EndSearch(GeniusLyricsSearchContextPtr search, const 
 void GeniusLyricsProvider::EndSearch(const int id, const LyricsSearchRequest &request, const LyricsSearchResults &results) {
 
   if (results.isEmpty()) {
-    qLog(Debug) << "GeniusLyrics: No lyrics for" << request.artist << request.title;
+    qLog(Debug) << "GeniusLyrics: No lyrics for" << request.song.artist() << request.song.title();
   }
   else {
-    qLog(Debug) << "GeniusLyrics: Got lyrics for" << request.artist << request.title;
+    qLog(Debug) << "GeniusLyrics: Got lyrics for" << request.song.artist() << request.song.title();
   }
 
   Q_EMIT SearchFinished(id, results);

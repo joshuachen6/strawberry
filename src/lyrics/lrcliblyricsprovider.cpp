@@ -54,10 +54,10 @@ void LrcLibLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &
 
   const QUrl url(QString::fromUtf8(kApiUrl));
   QUrlQuery url_query;
-  url_query.addQueryItem(u"track_name"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.title)));
-  url_query.addQueryItem(u"artist_name"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.artist)));
-  url_query.addQueryItem(u"album_name"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.album)));
-  url_query.addQueryItem(u"duration"_s, QString::number(request.duration));
+  url_query.addQueryItem(u"track_name"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.song.title())));
+  url_query.addQueryItem(u"artist_name"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.song.artist())));
+  url_query.addQueryItem(u"album_name"_s, QString::fromLatin1(QUrl::toPercentEncoding(request.song.album())));
+  url_query.addQueryItem(u"duration"_s, QString::number(request.song.length_nanosec() / 1000000000));
   QNetworkReply *reply = CreateGetRequest(url, url_query);
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, id, request]() { HandleSearchReply(reply, id, request); });
 
@@ -141,7 +141,7 @@ void LrcLibLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id,
       !json_object.contains("trackName"_L1) ||
       !json_object.contains("artistName"_L1) ||
       !json_object.contains("albumName"_L1) ||
-      !json_object.contains("plainLyrics"_L1)) {
+      (!json_object.contains("plainLyrics"_L1) && !json_object.contains("syncedLyrics"_L1))) {
     return;
   }
 
@@ -149,7 +149,12 @@ void LrcLibLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id,
   result.artist = json_object["artistName"_L1].toString();
   result.album = json_object["albumName"_L1].toString();
   result.title = json_object["trackName"_L1].toString();
-  result.lyrics = json_object["plainLyrics"_L1].toString();
+  QString syncedLyrics = json_object["syncedLyrics"_L1].toString();
+  if (!syncedLyrics.isEmpty()) {
+    result.lyrics = syncedLyrics;
+  } else {
+    result.lyrics = json_object["plainLyrics"_L1].toString();
+  }
   results << result;
 
 }
@@ -157,10 +162,10 @@ void LrcLibLyricsProvider::HandleSearchReply(QNetworkReply *reply, const int id,
 void LrcLibLyricsProvider::EndSearch(const int id, const LyricsSearchRequest &request, const LyricsSearchResults &results) {
 
   if (results.isEmpty()) {
-    qLog(Debug) << name_ << "No lyrics for" << request.artist << request.album << request.title;
+    qLog(Debug) << name_ << "No lyrics for" << request.song.artist() << request.song.album() << request.song.title();
   }
   else {
-    qLog(Debug) << name_ << "Got lyrics for" << request.artist << request.album << request.title;
+    qLog(Debug) << name_ << "Got lyrics for" << request.song.artist() << request.song.album() << request.song.title();
   }
 
   Q_EMIT SearchFinished(id, results);

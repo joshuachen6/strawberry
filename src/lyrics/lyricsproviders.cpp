@@ -38,6 +38,8 @@
 
 #include "constants/lyricssettings.h"
 
+using namespace Qt::Literals::StringLiterals;
+
 int LyricsProviders::NextOrderId = 0;
 
 using std::make_shared;
@@ -78,7 +80,19 @@ void LyricsProviders::ReloadSettings() {
 
   int i = 0;
   QList<LyricsProvider*> new_providers;
+
+  // Add the local-lrc provider first if it is enabled
+  if (providers_enabled.contains("local-lrc"_L1)) {
+    LyricsProvider *local_lrc_provider = ProviderByName("local-lrc"_L1);
+    if (local_lrc_provider) {
+      local_lrc_provider->set_enabled(true);
+      local_lrc_provider->set_order(++i);
+      new_providers << local_lrc_provider;
+    }
+  }
+
   for (const QString &name : providers_enabled) {
+    if (name == "local-lrc"_L1) continue; // Already added
     LyricsProvider *provider = ProviderByName(name);
     if (provider) {
       provider->set_enabled(true);

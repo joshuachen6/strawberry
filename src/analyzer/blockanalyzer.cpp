@@ -350,9 +350,10 @@ void BlockAnalyzer::paletteChange(const QPalette &_palette) {
 
   topbarpixmap_.fill(fg);
 
-  const double dr = 15 * static_cast<double>(bg.red() - fg.red()) / (rows_ * 16);
-  const double dg = 15 * static_cast<double>(bg.green() - fg.green()) / (rows_ * 16);
-  const double db = 15 * static_cast<double>(bg.blue() - fg.blue()) / (rows_ * 16);
+  const double fade_factor = bg.lightness() > 128 ? 6.0 : 15.0;
+  const double dr = fade_factor * static_cast<double>(bg.red() - fg.red()) / (rows_ * 16);
+  const double dg = fade_factor * static_cast<double>(bg.green() - fg.green()) / (rows_ * 16);
+  const double db = fade_factor * static_cast<double>(bg.blue() - fg.blue()) / (rows_ * 16);
   const int r = fg.red(), g = fg.green(), b = fg.blue();
 
   bar()->fill(bg);

@@ -68,6 +68,7 @@ class ContextView : public QWidget {
   void contextMenuEvent(QContextMenuEvent *e) override;
   void dragEnterEvent(QDragEnterEvent *e) override;
   void dropEvent(QDropEvent *e) override;
+  bool eventFilter(QObject *obj, QEvent *e) override;
 
  private:
   void AddActions();
@@ -79,9 +80,11 @@ class ContextView : public QWidget {
   void GetCoverAutomatically();
   void SearchLyrics();
   void UpdateFonts();
+  void SetLyrics(const QString &lyrics, const QString &provider = QString());
 
  Q_SIGNALS:
   void AlbumEnabledChanged();
+  void SeekRequested(quint64 seconds);
 
  private Q_SLOTS:
   void ActionShowAlbum();
@@ -98,6 +101,7 @@ class ContextView : public QWidget {
   void Stopped();
   void Error();
   void SongChanged(const Song &song);
+  void UpdateTrackPosition(qint64 position_nanosec);
   void AlbumCoverLoaded(const Song &song, const QImage &image);
 
  private:
@@ -152,6 +156,14 @@ class ContextView : public QWidget {
   QFont font_headline_;
   QFont font_normal_;
   QFont font_nosong_;
+
+  struct SyncedLyric {
+    qint64 timestamp_nsec;
+    QString text;
+    int block_idx;
+  };
+  QList<SyncedLyric> synced_lyrics_;
+  int current_synced_line_;
 
   QList<QLabel*> labels_play_;
   QList<ResizableTextEdit*> textedit_play_;

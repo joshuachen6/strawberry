@@ -106,13 +106,18 @@ void TrackSliderPopup::UpdatePixmap() {
                  << QPoint(pointy[1].x(), pointy[1].y() - 1)
                  << QPoint(pointy[2].x() - 1, pointy[2].y() - 1);
 
-    background_cache_ = QPixmap(total_rect.size());
+    qreal dpr = devicePixelRatioF();
+    QSize physical_size(total_rect.width() * dpr, total_rect.height() * dpr);
+
+    background_cache_ = QPixmap(physical_size);
+    background_cache_.setDevicePixelRatio(dpr);
     background_cache_.fill(Qt::transparent);
     QPainter p(&background_cache_);
     p.setRenderHint(QPainter::Antialiasing);
 
     // Draw the shadow to a different image
-    QImage blur_source(total_rect.size(), QImage::Format_ARGB32);
+    QImage blur_source(physical_size, QImage::Format_ARGB32);
+    blur_source.setDevicePixelRatio(dpr);
     blur_source.fill(Qt::transparent);
 
     QPainter blur_painter(&blur_source);
@@ -149,7 +154,11 @@ void TrackSliderPopup::UpdatePixmap() {
     p.drawPolygon(inner_pointy);
   }
 
-  pixmap_ = QPixmap(total_rect.size());
+  qreal dpr = devicePixelRatioF();
+  QSize physical_size(total_rect.width() * dpr, total_rect.height() * dpr);
+
+  pixmap_ = QPixmap(physical_size);
+  pixmap_.setDevicePixelRatio(dpr);
   pixmap_.fill(Qt::transparent);
   QPainter p(&pixmap_);
   p.setRenderHint(QPainter::Antialiasing);

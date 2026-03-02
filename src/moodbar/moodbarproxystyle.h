@@ -89,7 +89,7 @@ class MoodbarProxyStyle : public QProxyStyle {
   void DrawArrow(const QStyleOptionSlider *option, QPainter *painter) const;
   void ShowContextMenu(const QPoint pos);
 
-  static QPixmap MoodbarPixmap(const ColorVector &colors, const QSize size, const QPalette &palette, const QStyleOptionSlider *opt);
+  QPixmap MoodbarPixmap(const ColorVector &colors, const QSize size, const QPalette &palette, const QStyleOptionSlider *opt);
 
  private Q_SLOTS:
   void FaderValueChanged(const qreal value);

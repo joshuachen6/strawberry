@@ -71,6 +71,9 @@ MoodbarProxyStyle::MoodbarProxyStyle(QSlider *slider, QObject *parent)
   slider->setStyle(this);
   slider->installEventFilter(this);
 
+  // Force a full repaint on any value change to prevent artifacts when dragging the new glowing bar
+  QObject::connect(slider, &QSlider::valueChanged, slider, [slider]() { slider->update(); });
+
   QObject::connect(fade_timeline_, &QTimeLine::valueChanged, this, &MoodbarProxyStyle::FaderValueChanged);
 
   ReloadSettings();
@@ -237,6 +240,17 @@ void MoodbarProxyStyle::Render(const ComplexControl control, const QStyleOptionS
         }
         fade_target_ = moodbar_pixmap_;
         QPainter p(&fade_target_);
+        
+        if (option->maximum > option->minimum) {
+          int slider_effective_width = option->rect.width() - kArrowWidth;
+          qint64 slider_delta = option->sliderValue - option->minimum;
+          qint64 slider_range = option->maximum - option->minimum;
+          int playhead_x = option->rect.left() + static_cast<int>(slider_delta * slider_effective_width / slider_range) + (kArrowWidth / 2);
+          QRect unplayed_rect = option->rect;
+          unplayed_rect.setLeft(playhead_x);
+          p.fillRect(unplayed_rect, QColor(0, 0, 0, 160));
+        }
+        
         DrawArrow(option, &p);
         p.end();
       }
@@ -253,11 +267,23 @@ void MoodbarProxyStyle::Render(const ComplexControl control, const QStyleOptionS
       QProxyStyle::drawComplexControl(control, option, painter, widget);
       break;
 
-    case State::MoodbarOn:
+    case State::MoodbarOn: {
       EnsureMoodbarRendered(option);
       painter->drawPixmap(option->rect, moodbar_pixmap_);
+      
+      if (option->maximum > option->minimum) {
+        int slider_effective_width = option->rect.width() - kArrowWidth;
+        qint64 slider_delta = option->sliderValue - option->minimum;
+        qint64 slider_range = option->maximum - option->minimum;
+        int playhead_x = option->rect.left() + static_cast<int>(slider_delta * slider_effective_width / slider_range) + (kArrowWidth / 2);
+        QRect unplayed_rect = option->rect;
+        unplayed_rect.setLeft(playhead_x);
+        painter->fillRect(unplayed_rect, QColor(0, 0, 0, 160));
+      }
+      
       DrawArrow(option, painter);
       break;
+    }
   }
 
 }
@@ -351,7 +377,11 @@ QPixmap MoodbarProxyStyle::MoodbarPixmap(const ColorVector &colors, const QSize 
   QRect inner_rect(border_rect);
   inner_rect.adjust(kBorderSize, kBorderSize, -kBorderSize, -kBorderSize);
 
-  QPixmap ret(size);
+  qreal dpr = slider_->devicePixelRatioF();
+  QSize physical_size(size.width() * dpr, size.height() * dpr);
+  QPixmap ret(physical_size);
+  ret.setDevicePixelRatio(dpr);
+  ret.fill(palette.color(QPalette::Active, QPalette::Window)); // Fix for background garbage artifacts
   QPainter p(&ret);
 
   // Draw the moodbar

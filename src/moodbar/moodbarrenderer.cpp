@@ -133,21 +133,40 @@ void MoodbarRenderer::Render(const ColorVector &colors, QPainter *p, const QRect
     screen_colors.append(QColor(r / n, g / n, b / n));
   }
 
-  // Draw the actual moodbar.
+  // Find maximum brightness to normalize height for the Energy Silhouette
+  int max_v = 1;
+  for (const QColor &c : screen_colors) {
+    int h, s, v;
+    c.getHsv(&h, &s, &v);
+    if (v > max_v) max_v = v;
+  }
+
+  // Draw the actual moodbar (Energy Silhouette).
   for (int x = 0; x < rect.width(); x++) {
     int h = 0, s = 0, v = 0;
     screen_colors[x].getHsv(&h, &s, &v);
 
-    for (int y = 0; y <= rect.height() / 2; ++y) {
-      float coeff = static_cast<float>(y) / static_cast<float>(rect.height() / 2);  // NOLINT(bugprone-integer-division)
-      float coeff2 = 1.0F - ((1.0F - coeff) * (1.0F - coeff));
-      coeff = 1.0F - (1.0F - coeff) / 2.0F;
-      coeff2 = 1.F - (1.F - coeff2) / 2.0F;
+    float energy_ratio = static_cast<float>(v) / static_cast<float>(max_v);
+    // Smooth, non-linear scaling for a more dramatic silhouette
+    energy_ratio = energy_ratio * energy_ratio * 0.3f + energy_ratio * 0.7f;
+    float min_ratio = 0.15f;
+    energy_ratio = qMax(min_ratio, energy_ratio);
 
-      p->setPen(QColor::fromHsv(h, qBound(0, static_cast<int>(static_cast<float>(s) * coeff), 255), qBound(0, static_cast<int>(255.F - (255.F - static_cast<float>(v)) * coeff2), 255)));
+    int col_height = static_cast<int>(static_cast<float>(rect.height()) * energy_ratio);
+    if (col_height <= 0) col_height = 1;
 
-      p->drawPoint(rect.left() + x, rect.top() + y);
-      p->drawPoint(rect.left() + x, rect.top() + rect.height() - 1 - y);
+    int start_y = rect.top() + rect.height() - col_height;
+    int end_y = rect.bottom();
+
+    for (int y = start_y; y <= end_y; ++y) {
+      float y_ratio = 1.0f - static_cast<float>(y - start_y) / static_cast<float>(qMax(1, col_height - 1));
+
+      // Make the top of the mountain brighter, and the base deeper/more saturated
+      int current_v = qBound(0, static_cast<int>(static_cast<float>(v) * (0.4f + 0.6f * y_ratio)), 255);
+      int current_s = qBound(0, static_cast<int>(static_cast<float>(s) * (1.0f - 0.4f * y_ratio)), 255);
+
+      p->setPen(QColor::fromHsv(h, current_s, current_v));
+      p->drawPoint(rect.left() + x, y);
     }
   }
 

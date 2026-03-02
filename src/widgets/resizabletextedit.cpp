@@ -19,6 +19,8 @@
 
 #include <QTextEdit>
 #include <QResizeEvent>
+#include <QTextBlockFormat>
+#include <QTextCursor>
 
 #include "resizabletextedit.h"
 
@@ -30,6 +32,14 @@ ResizableTextEdit::ResizableTextEdit(QWidget *parent)
   setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   setWordWrapMode(QTextOption::WordWrap);
   setLineWrapMode(QTextEdit::WidgetWidth);
+  document()->setDocumentMargin(0);
+  setViewportMargins(0, 0, 0, 0);
+  setContentsMargins(0, 0, 0, 0);
+  
+  // Set default text option and alignment
+  QTextOption option = document()->defaultTextOption();
+  option.setAlignment(Qt::AlignLeft);
+  document()->setDefaultTextOption(option);
 
 }
 
@@ -48,10 +58,45 @@ void ResizableTextEdit::resizeEvent(QResizeEvent *e) {
 
 void ResizableTextEdit::SetText(const QString &text) {
 
-  text_ = text;
+  // Normalize input string: remove \r and trim each line to ensure no hidden spaces
+  QString normalized = text;
+  normalized.remove(u'\r');
+  QStringList lines = normalized.split(u'\n');
+  for (QString &line : lines) line = line.trimmed();
+  normalized = lines.join(u'\n');
+  
+  text_ = normalized;
 
-  QTextEdit::setText(text);
+  // Use setText to preserve HTML/rich formatting from the source
+  QTextEdit::setText(normalized);
+
+  // Force zero margins on the document AGAIN after setText (as setText resets document)
+  document()->setDocumentMargin(0);
+
+  // Apply a uniform block format to EVERY block in the document to ensure uniformity
+  QTextBlockFormat fmt;
+  fmt.setTextIndent(0);
+  fmt.setIndent(0);
+  fmt.setLeftMargin(0);
+  fmt.setRightMargin(0);
+  fmt.setTopMargin(0);
+  fmt.setBottomMargin(0);
+  fmt.setAlignment(Qt::AlignLeft);
+  if (line_spacing_ > 0) {
+    fmt.setLineHeight(line_spacing_, QTextBlockFormat::LineDistanceHeight);
+  }
+
+  QTextCursor cursor(document());
+  cursor.select(QTextCursor::Document);
+  cursor.setBlockFormat(fmt);
 
   updateGeometry();
 
+}
+
+void ResizableTextEdit::SetLineSpacing(int spacing) {
+  line_spacing_ = spacing;
+  if (!text_.isEmpty()) {
+    SetText(text_);
+  }
 }

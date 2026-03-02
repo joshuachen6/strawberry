@@ -69,6 +69,7 @@ class PlayingWidget : public QWidget {
 
  public Q_SLOTS:
   void Playing();
+  void Paused();
   void Stopped();
   void Error();
   void SongChanged(const Song &song);
@@ -116,6 +117,7 @@ class PlayingWidget : public QWidget {
   bool fit_width_;
   QTimeLine *timeline_show_hide_;
   QTimeLine *timeline_fade_;
+  QTimeLine *timeline_rotate_;
   QTextDocument *details_;
   qreal pixmap_previous_track_opacity_;
   bool downloading_covers_;

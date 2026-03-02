@@ -74,7 +74,9 @@ void BlockAnalyzer::resizeEvent(QResizeEvent *e) {
   QWidget::resizeEvent(e);
 
   background_ = QPixmap(size());
+  background_.fill(Qt::transparent);
   canvas_ = QPixmap(size());
+  canvas_.fill(Qt::transparent);
 
   const int oldRows = rows_;
 
@@ -160,6 +162,7 @@ void BlockAnalyzer::analyze(QPainter &p, const Scope &s, const bool new_frame) {
   }
 
   QPainter canvas_painter(&canvas_);
+  canvas_.fill(Qt::transparent);  // Clear each frame for proper transparency
 
   interpolate(s, scope_);
 
@@ -356,11 +359,11 @@ void BlockAnalyzer::paletteChange(const QPalette &_palette) {
   const double db = fade_factor * static_cast<double>(bg.blue() - fg.blue()) / (rows_ * 16);
   const int r = fg.red(), g = fg.green(), b = fg.blue();
 
-  bar()->fill(bg);
+  bar()->fill(Qt::transparent);
 
   QPainter p(bar());
   for (int y = 0; y < rows_; ++y) {
-    // graduate the fg color
+    // graduate the fg color - blocks themselves remain visible
     p.fillRect(0, y * (kHeight + 1), kWidth, kHeight, QColor(r + static_cast<int>(dr * y), g + static_cast<int>(dg * y), b + static_cast<int>(db * y)));
   }
 
@@ -380,7 +383,7 @@ void BlockAnalyzer::paletteChange(const QPalette &_palette) {
 
     // Precalculate all fade-bar pixmaps
     for (int y = 0; y < kFadeSize; ++y) {
-      fade_bars_[y].fill(palette().color(QPalette::Window));
+      fade_bars_[y].fill(Qt::transparent);
       QPainter f(&fade_bars_[y]);
       for (int z = 0; z < rows_; ++z) {
         const double Y = 1.0 - (log10(kFadeSize - y) / log10(kFadeSize));
@@ -399,18 +402,18 @@ void BlockAnalyzer::drawBackground() {
     return;
   }
 
-  const QColor bg = palette().color(QPalette::Window);
-  const QColor bgdark = bg.darker(112);
+  // Transparent background - let window background show through
+  background_.fill(Qt::transparent);
 
-  background_.fill(bg);
-
+  // Draw only the subtle dark grid cells
   QPainter p(&background_);
 
   if (!p.paintEngine()) return;
 
+  QColor cell_bg(0, 0, 0, 60);
   for (int x = 0; x < columns_; ++x) {
     for (int y = 0; y < rows_; ++y) {
-      p.fillRect(x * (kWidth + 1), y * (kHeight + 1) + y_, kWidth, kHeight, bgdark);
+      p.fillRect(x * (kWidth + 1), y * (kHeight + 1) + y_, kWidth, kHeight, cell_bg);
     }
   }
 

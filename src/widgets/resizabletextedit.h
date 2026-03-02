@@ -36,12 +36,14 @@ class ResizableTextEdit : public QTextEdit {
   QString Text() const { return text_; }
   void setText(const QString &text) { SetText(text); }
   void SetText(const QString &text);
+  void SetLineSpacing(int spacing);
 
  protected:
   virtual void resizeEvent(QResizeEvent *event) override;
 
  private:
   QString text_;
+  int line_spacing_ = 0;
 };
 
 #endif  // RESIZABLETEXTEDIT_H

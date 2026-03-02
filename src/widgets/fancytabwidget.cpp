@@ -311,66 +311,14 @@ void FancyTabWidget::paintEvent(QPaintEvent *pe) {
   QRect backgroundRect = rect();
   backgroundRect.setWidth(tabBar()->width());
 
-  QString key = QString::asprintf("mh_vertical %d %d %d %d %d", backgroundRect.width(), backgroundRect.height(), bg_color_.rgb(), (bg_gradient_ ? 1 : 0), (background_pixmap_.isNull() ? 0 : 1));
+  // Glass dark sidebar background
+  painter.setRenderHint(QPainter::Antialiasing);
+  painter.fillRect(backgroundRect, QColor(20, 20, 25, 140));
 
-  QPixmap pixmap;
-  if (!QPixmapCache::find(key, &pixmap)) {
-
-    pixmap = QPixmap(backgroundRect.size());
-    QPainter p(&pixmap);
-    p.fillRect(backgroundRect, bg_color_);
-
-    // Draw the gradient fill.
-    if (bg_gradient_) {
-
-      QRect rect(0, 0, backgroundRect.width(), backgroundRect.height());
-
-      QColor shadow = StyleHelper::shadowColor(false);
-      QLinearGradient grad(backgroundRect.topRight(), backgroundRect.topLeft());
-      grad.setColorAt(0, bg_color_.lighter(117));
-      grad.setColorAt(1, shadow.darker(109));
-      p.fillRect(rect, grad);
-
-      QColor light(255, 255, 255, 80);
-      p.setPen(light);
-      p.drawLine(rect.topRight() - QPoint(1, 0), rect.bottomRight() - QPoint(1, 0));
-      QColor dark(0, 0, 0, 90);
-      p.setPen(dark);
-      p.drawLine(rect.topLeft(), rect.bottomLeft());
-
-    }
-
-    // Draw the translucent png graphics over the gradient fill
-    if (!background_pixmap_.isNull()) {
-      QRect pixmap_rect(background_pixmap_.rect());
-      pixmap_rect.moveTo(backgroundRect.topLeft());
-
-      while (pixmap_rect.top() < backgroundRect.bottom()) {
-        QRect source_rect(pixmap_rect.intersected(backgroundRect));
-        source_rect.moveTo(0, 0);
-        p.drawPixmap(pixmap_rect.topLeft(), background_pixmap_, source_rect);
-        pixmap_rect.moveTop(pixmap_rect.bottom() - 10);
-      }
-    }
-
-    // Shadow effect of the background
-    QColor light(255, 255, 255, 80);
-    p.setPen(light);
-    p.drawLine(backgroundRect.topRight() - QPoint(1, 0), backgroundRect.bottomRight() - QPoint(1, 0));
-    QColor dark(0, 0, 0, 90);
-    p.setPen(dark);
-    p.drawLine(backgroundRect.topLeft(), backgroundRect.bottomLeft());
-
-    p.setPen(StyleHelper::borderColor());
-    p.drawLine(backgroundRect.topRight(), backgroundRect.bottomRight());
-
-    p.end();
-
-    QPixmapCache::insert(key, pixmap);
-
-  }
-
-  painter.drawPixmap(backgroundRect.topLeft(), pixmap);
+  // Subtle right border
+  QColor border(255, 255, 255, 25);
+  painter.setPen(border);
+  painter.drawLine(backgroundRect.topRight(), backgroundRect.bottomRight());
 
 }
 

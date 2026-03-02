@@ -42,6 +42,8 @@ constexpr char kSettingsSummaryFmt[] = "SummaryFmt";
 
 constexpr char kDefaultFontFamily[] = "Noto Sans";
 constexpr qreal kDefaultFontSizeHeadline = 11;
+constexpr char kLyricsLineSpacing[] = "lyrics_line_spacing";
+constexpr int kDefaultLyricsLineSpacing = 6;
 
 }  // namespace ContextSettings
 

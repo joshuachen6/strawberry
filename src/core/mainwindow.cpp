@@ -42,6 +42,7 @@
 #include <QFileDialog>
 #include <QFontMetrics>
 #include <QList>
+#include <QPainter>
 #include <QSet>
 #include <QVariant>
 #include <QString>
@@ -98,6 +99,11 @@
 #include "core/database.h"
 #include "core/filesystemmusicstorage.h"
 #include "core/deletefiles.h"
+#include <QGraphicsDropShadowEffect>
+#include <QApplication>
+#include <QScrollBar>
+#include <QDialog>
+#include <QStyleOption>
 #include "core/settings.h"
 #include "core/player.h"
 #include "utilities/envutils.h"
@@ -449,13 +455,188 @@ MainWindow::MainWindow(Application *app,
 
   // Add the playing widget to the fancy tab widget
   ui_->tabs->AddBottomWidget(ui_->widget_playing);
-  ui_->tabs->SetBackgroundPixmap(QPixmap(u":/pictures/sidebar-background.png"_s));
+  // Don't set a background pixmap on the tab widget - we want transparency
+  // ui_->tabs->SetBackgroundPixmap(QPixmap(u":/pictures/sidebar-background.png"_s));
   ui_->tabs->LoadSettings(QLatin1String(MainWindowSettings::kSettingsGroup));
+
+  // Glass scrollbar: intercept QScrollBar paint events directly.
+  // This is the only reliable way to override scrollbar rendering on all
+  // platform styles (Breeze, Adwaita, etc.) which ignore QSS and setStyle().
+  MainWindow *mainWin = this;
+  struct ScrollBarPaintFilter : public QObject {
+    MainWindow *mw;
+    explicit ScrollBarPaintFilter(MainWindow *w) : mw(w) {}
+    bool eventFilter(QObject *obj, QEvent *ev) override {
+      if (ev->type() == QEvent::Paint) {
+        QScrollBar *sb = qobject_cast<QScrollBar*>(obj);
+        if (!sb) return false;
+
+        ev->accept();
+
+        QPainter p(sb);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Paint the main window's blurred background at scrollbar position
+        if (!mw->window_background_pixmap_.isNull()) {
+          QPoint posInMain = sb->mapTo(mw, QPoint(0, 0));
+
+          double widgetAspect = static_cast<double>(mw->rect().width()) / mw->rect().height();
+          double pixmapAspect = static_cast<double>(mw->window_background_pixmap_.width()) / mw->window_background_pixmap_.height();
+
+          double drawWidth, drawHeight;
+          double xOffset = 0, yOffset = 0;
+
+          if (widgetAspect > pixmapAspect) {
+              drawWidth = mw->window_background_pixmap_.width();
+              drawHeight = drawWidth / widgetAspect;
+              yOffset = (mw->window_background_pixmap_.height() - drawHeight) / 2.0;
+          } else {
+              drawHeight = mw->window_background_pixmap_.height();
+              drawWidth = drawHeight * widgetAspect;
+              xOffset = (mw->window_background_pixmap_.width() - drawWidth) / 2.0;
+          }
+
+          // Ratio of drawn pixels in the source pixmap vs pixels on the widget screen
+          double sx = drawWidth / mw->width();
+          double sy = drawHeight / mw->height();
+
+          QRectF sourceRect(xOffset + posInMain.x() * sx, yOffset + posInMain.y() * sy, sb->width() * sx, sb->height() * sy);
+          p.drawPixmap(sb->rect(), mw->window_background_pixmap_, sourceRect.toAlignedRect());
+        } else {
+          p.fillRect(sb->rect(), QColor(30, 30, 35));
+        }
+
+        const bool horiz = sb->orientation() == Qt::Horizontal;
+        const int extent = horiz ? sb->height() : sb->width();
+        const int radius = extent / 2;
+
+        // Subtle track
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 0, 0, 25));
+        p.drawRoundedRect(sb->rect(), radius, radius);
+
+        // Compute handle rect
+        const int range = sb->maximum() - sb->minimum();
+        if (range > 0) {
+          const int total = horiz ? sb->width() : sb->height();
+          const int page = sb->pageStep();
+          const int handleSize = qMax(total * page / (range + page), 30);
+          const int pos = (sb->value() - sb->minimum()) * (total - handleSize) / range;
+
+          QRect handleRect;
+          if (horiz) {
+            handleRect = QRect(pos, 0, handleSize, sb->height());
+          } else {
+            handleRect = QRect(0, pos, sb->width(), handleSize);
+          }
+
+          const bool hovered = sb->underMouse();
+          p.setBrush(QColor(255, 255, 255, hovered ? 140 : 80));
+          p.drawRoundedRect(handleRect.adjusted(1, 1, -1, -1), radius - 1, radius - 1);
+        }
+
+        return true;  // we handled the paint
+      }
+
+      // On Polish, configure the scrollbar widget
+      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show) {
+        if (QScrollBar *sb = qobject_cast<QScrollBar*>(obj)) {
+          sb->setAutoFillBackground(false);
+          sb->setAttribute(Qt::WA_OpaquePaintEvent, false);
+          sb->setAttribute(Qt::WA_NoSystemBackground, true);
+          sb->setAttribute(Qt::WA_TranslucentBackground, true);
+          // Set fixed size for the scrollbar
+          if (sb->orientation() == Qt::Vertical) {
+            sb->setFixedWidth(8);
+          } else {
+            sb->setFixedHeight(8);
+          }
+        }
+      }
+      return false;
+    }
+  };
+  ScrollBarPaintFilter *sbFilter = new ScrollBarPaintFilter(mainWin);
+  qApp->installEventFilter(sbFilter);
+
+  // Apply to existing scrollbars
+  const QList<QScrollBar*> scrollbars = findChildren<QScrollBar*>();
+  for (QScrollBar *sb : scrollbars) {
+    sb->installEventFilter(sbFilter);
+    sb->setAutoFillBackground(false);
+    sb->setAttribute(Qt::WA_OpaquePaintEvent, false);
+    sb->setAttribute(Qt::WA_NoSystemBackground, true);
+    sb->setAttribute(Qt::WA_TranslucentBackground, true);
+  }
+
+  // Setup Glass Styling & Transparency Filter (applied once)
+  struct GlassDialogFilter : public QObject {
+    bool eventFilter(QObject *obj, QEvent *ev) override {
+      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show) {
+        if (QDialog *dialog = qobject_cast<QDialog*>(obj)) {
+          dialog->setAttribute(Qt::WA_TranslucentBackground);
+          dialog->setAttribute(Qt::WA_NoSystemBackground);
+          dialog->setStyleSheet(QStringLiteral(
+            "QDialog { background: rgba(20, 20, 25, 210); border: 1px solid rgba(255, 255, 255, 30); border-radius: 12px; } "
+            "QWidget { background: transparent; color: white; } "
+            "QTreeWidget, QListWidget, QTableWidget, QStackedWidget, QScrollArea, QWidget#qt_scrollarea_viewport, QWidget#qt_scrollarea_content { background: transparent; border: none; } "
+            "QGroupBox { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 25); border-radius: 8px; margin-top: 15px; padding-top: 10px; } "
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; } "
+            "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: rgba(255, 255, 255, 25); border: 1px solid rgba(255, 255, 255, 40); border-radius: 4px; padding: 2px; color: white; } "
+            "QComboBox QAbstractItemView { background: rgba(25, 25, 30, 240); border: 1px solid rgba(255, 255, 255, 30); selection-background-color: rgba(255, 255, 255, 40); } "
+            "QPushButton { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 40); border-radius: 4px; padding: 4px 10px; color: white; } "
+            "QPushButton:hover { background: rgba(255, 255, 255, 50); } "
+          ));
+        }
+      }
+      return false;
+    }
+  };
+  qApp->installEventFilter(new GlassDialogFilter());
+
+  // Player controls layout stability
+  ui_->player_controls_container->layout()->setContentsMargins(10, 10, 10, 10);
+  ui_->layout_player_controls->setSpacing(8);
+  ui_->back_button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  ui_->pause_play_button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  ui_->stop_button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  ui_->forward_button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  ui_->button_love->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
+  // Global glass style
+  setStyleSheet(QStringLiteral(
+    "QWidget#centralWidget { background: transparent; } "
+    "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
+    "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
+    "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
+    "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
+    "QMenu::item:selected { background: rgba(255,255,255,30); } "
+    "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
+    "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
+    "QTreeView, QListView, QTableView { background: transparent; border: none; alternate-background-color: rgba(255, 255, 255, 10); } "
+    "FancyTabWidget, FancyTabBar, QTabBar { background: transparent; } "
+    "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent; } "
+    "QFrame { background: transparent; border: none; } "
+    "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView { background: transparent; border: none; } "
+    "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
+    "QHeaderView { background: transparent; border: none; } "
+    "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
+    "QToolButton { background: transparent; border: none; padding: 4px; color: white; } "
+    "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
+    "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
+    "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
+    "QToolButton#stop_button { padding-right: 22px; } "
+    "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
+    "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
+    "QTextEdit, ResizableTextEdit { background: transparent; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
+    "QWidget#player_controls, PlayingWidget { background: rgba(30, 30, 35, 120); border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40); } "
+  ));
 
   track_position_timer_->setInterval(kTrackPositionUpdateTimeMs);
   QObject::connect(track_position_timer_, &QTimer::timeout, this, &MainWindow::UpdateTrackPosition);
   track_slider_timer_->setInterval(kTrackSliderUpdateTimeMs);
   QObject::connect(track_slider_timer_, &QTimer::timeout, this, &MainWindow::UpdateTrackSliderPosition);
+
 
   metadata_queue_timer_->setInterval(200ms);  // 200ms between requests to avoid rate limiting
   metadata_queue_timer_->setSingleShot(true);
@@ -942,9 +1123,11 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(&*app_->player(), &Player::PlaylistFinished, ui_->widget_playing, &PlayingWidget::Stopped);
   QObject::connect(&*app_->player(), &Player::Playing, ui_->widget_playing, &PlayingWidget::Playing);
   QObject::connect(&*app_->player(), &Player::Stopped, ui_->widget_playing, &PlayingWidget::Stopped);
+  QObject::connect(&*app_->player(), &Player::Paused, ui_->widget_playing, &PlayingWidget::Paused);
   QObject::connect(&*app_->player(), &Player::Error, ui_->widget_playing, &PlayingWidget::Error);
   QObject::connect(ui_->widget_playing, &PlayingWidget::ShowAboveStatusBarChanged, this, &MainWindow::PlayingWidgetPositionChanged);
   QObject::connect(this, &MainWindow::AlbumCoverReady, ui_->widget_playing, &PlayingWidget::AlbumCoverLoaded);
+  QObject::connect(this, &MainWindow::AlbumCoverReady, this, &MainWindow::UpdateBlurredBackground);
   QObject::connect(this, &MainWindow::SearchCoverInProgress, ui_->widget_playing, &PlayingWidget::SearchCoverInProgress);
 
   QObject::connect(ui_->action_console, &QAction::triggered, this, &MainWindow::ShowConsole);
@@ -1469,6 +1652,9 @@ void MainWindow::MediaStopped() {
   album_cover_ = AlbumCoverImageResult();
 
   app_->scrobbler()->ClearPlaying();
+  
+  // Clear global background
+  UpdateBlurredBackground(Song(), QImage());
 
 }
 
@@ -3297,6 +3483,124 @@ void MainWindow::AlbumCoverLoaded(const Song &song, const AlbumCoverLoaderResult
 
   GetCoverAutomatically();
 
+}
+
+void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) {
+  Q_UNUSED(song);
+  if (image.isNull()) {
+    window_background_pixmap_ = QPixmap();
+    ui_->player_controls->setGraphicsEffect(nullptr);
+    ui_->widget_playing->setGraphicsEffect(nullptr);
+    bloom_player_controls_ = nullptr;
+    bloom_playing_widget_ = nullptr;
+    update();
+    // Re-apply style even here to maintain transparency
+  } else {
+    QSize target_size(1024, 1024);
+    QImage scaled_image = image.scaled(target_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    
+    // Crop the center
+    QRect crop_rect = QRect((scaled_image.width() - target_size.width()) / 2,
+                            (scaled_image.height() - target_size.height()) / 2,
+                            target_size.width(), target_size.height());
+    scaled_image = scaled_image.copy(crop_rect);
+    
+    if (scaled_image.format() != QImage::Format_ARGB32_Premultiplied && scaled_image.format() != QImage::Format_ARGB32) {
+        scaled_image = scaled_image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+    
+    QImage blurred(target_size, QImage::Format_ARGB32_Premultiplied);
+    blurred.fill(Qt::transparent);
+    QPainter blur_painter(&blurred);
+    qt_blurImage(&blur_painter, scaled_image, 100.0, true, false); // HUGE blur
+    blur_painter.fillRect(blurred.rect(), QColor(10, 10, 15, 80)); 
+    blur_painter.end();
+    
+    window_background_pixmap_ = QPixmap::fromImage(blurred);
+    
+    // Bloom effect logic: update existing objects or create them efficiently
+    QImage scaled1x1 = image.scaled(1, 1, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QColor avg_color = scaled1x1.pixelColor(0, 0);
+    
+    int h = 0, s = 0, v = 0;
+    avg_color.getHsv(&h, &s, &v);
+    if (h < 0) h = 0;
+    s = qMin(255, s + 100);
+    v = qMin(255, qMax(180, v + 50));
+    QColor bloom_color = QColor::fromHsv(h, s, v);
+    
+    auto update_bloom = [bloom_color](QWidget *target, QGraphicsDropShadowEffect **effect_ptr) {
+        if (!*effect_ptr) {
+            *effect_ptr = new QGraphicsDropShadowEffect(target);
+            (*effect_ptr)->setBlurRadius(30);
+            (*effect_ptr)->setOffset(0, 0);
+            target->setGraphicsEffect(*effect_ptr);
+        }
+        (*effect_ptr)->setColor(bloom_color);
+    };
+    
+    update_bloom(ui_->player_controls, &bloom_player_controls_);
+    update_bloom(ui_->widget_playing, &bloom_playing_widget_);
+  }
+
+  // Re-apply global glass style every time to ensure transparency persists
+  setStyleSheet(QStringLiteral(
+    "QWidget#centralWidget { background: transparent; } "
+    "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
+    "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
+    "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
+    "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
+    "QMenu::item:selected { background: rgba(255,255,255,30); } "
+    "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
+    "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
+    "QTreeView, QListView, QTableView { background: transparent; border: none; alternate-background-color: rgba(255, 255, 255, 10); } "
+    "FancyTabWidget, FancyTabBar, QTabBar { background: transparent; } "
+    "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent; } "
+    "QFrame { background: transparent; border: none; } "
+    "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView { background: transparent; border: none; } "
+    "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
+    "QHeaderView { background: transparent; border: none; } "
+    "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
+    "QToolButton { background: transparent; border: none; padding: 4px; color: white; } "
+    "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
+    "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
+    "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
+    "QToolButton#stop_button { padding-right: 22px; } "
+    "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
+    "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
+    "QTextEdit, ResizableTextEdit { background: transparent; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
+    "QWidget#player_controls, PlayingWidget { background: rgba(30, 30, 35, 120); border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40); } "
+  ));
+
+  update();
+}
+
+
+void MainWindow::paintEvent(QPaintEvent *e) {
+  QMainWindow::paintEvent(e);
+  
+  if (!window_background_pixmap_.isNull()) {
+    QPainter p(this);
+    
+    double widgetAspect = static_cast<double>(rect().width()) / rect().height();
+    double pixmapAspect = static_cast<double>(window_background_pixmap_.width()) / window_background_pixmap_.height();
+    
+    int drawWidth, drawHeight;
+    int xOffset = 0, yOffset = 0;
+    
+    if (widgetAspect > pixmapAspect) {
+        drawWidth = window_background_pixmap_.width();
+        drawHeight = drawWidth / widgetAspect;
+        yOffset = (window_background_pixmap_.height() - drawHeight) / 2;
+    } else {
+        drawHeight = window_background_pixmap_.height();
+        drawWidth = drawHeight * widgetAspect;
+        xOffset = (window_background_pixmap_.width() - drawWidth) / 2;
+    }
+    
+    QRect sourceRect(xOffset, yOffset, drawWidth, drawHeight);
+    p.drawPixmap(rect(), window_background_pixmap_, sourceRect);
+  }
 }
 
 void MainWindow::GetCoverAutomatically() {

@@ -134,6 +134,7 @@ QIcon PlaylistSequence::AddDesaturatedIcon(const QIcon &icon) {
 QPixmap PlaylistSequence::DesaturatedPixmap(const QPixmap &pixmap) {
 
   QPixmap ret(pixmap.size());
+  ret.setDevicePixelRatio(pixmap.devicePixelRatioF());
   ret.fill(Qt::transparent);
 
   QPainter p(&ret);

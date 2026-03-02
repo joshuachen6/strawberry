@@ -34,6 +34,7 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QFontComboBox>
+#include <QSpinBox>
 #include <QSettings>
 
 #include "constants/mainwindowsettings.h"
@@ -147,6 +148,7 @@ void ContextSettingsPage::Load() {
   ui_->font_normal->setCurrentFont(s.value(kFontNormal, default_font).toString());
   ui_->font_size_headline->setValue(s.value(kFontSizeHeadline, kDefaultFontSizeHeadline).toReal());
   ui_->font_size_normal->setValue(s.value(kFontSizeNormal, font().pointSizeF()).toReal());
+  ui_->lyrics_line_spacing->setValue(s.value(kLyricsLineSpacing, kDefaultLyricsLineSpacing).toInt());
 
   s.endGroup();
 
@@ -174,6 +176,7 @@ void ContextSettingsPage::Save() {
   s.setValue(kFontNormal, ui_->font_normal->currentFont().family());
   s.setValue(kFontSizeHeadline, ui_->font_size_headline->value());
   s.setValue(kFontSizeNormal, ui_->font_size_normal->value());
+  s.setValue(kLyricsLineSpacing, ui_->lyrics_line_spacing->value());
   s.endGroup();
 
   s.beginGroup(MainWindowSettings::kSettingsGroup);

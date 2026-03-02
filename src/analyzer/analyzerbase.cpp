@@ -59,7 +59,9 @@ AnalyzerBase::AnalyzerBase(QWidget *parent, const uint scope_size)
       is_playing_(false),
       timeout_(40) {
 
-  setAttribute(Qt::WA_OpaquePaintEvent, true);
+  // setAttribute(Qt::WA_OpaquePaintEvent, true);
+  setAttribute(Qt::WA_TranslucentBackground, true);
+  setAttribute(Qt::WA_NoSystemBackground, true);
 
 }
 
@@ -106,8 +108,8 @@ void AnalyzerBase::transform(Scope &scope) {
 
 void AnalyzerBase::paintEvent(QPaintEvent *e) {
 
+  Q_UNUSED(e)
   QPainter p(this);
-  p.fillRect(e->rect(), palette().color(QPalette::Window));
 
   switch (engine_->state()) {
     case EngineBase::State::Playing:{

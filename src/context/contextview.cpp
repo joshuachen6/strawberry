@@ -192,6 +192,7 @@ ContextView::ContextView(QWidget *parent)
 
   textedit_play_lyrics_->setReadOnly(true);
   textedit_play_lyrics_->setFrameShape(QFrame::NoFrame);
+  textedit_play_lyrics_->SetLineSpacing(6);  // Default line spacing for lyrics
   textedit_play_lyrics_->hide();
 
   layout_play_->setContentsMargins(0, 0, 0, 0);
@@ -295,6 +296,8 @@ void ContextView::ReloadSettings() {
   font_nosong_.setPointSizeF(font_headline_.pointSizeF() * 1.6F);
   font_normal_.setFamily(s.value(ContextSettings::kFontNormal, default_font).toString());
   font_normal_.setPointSizeF(s.value(ContextSettings::kFontSizeNormal, font().pointSizeF()).toReal());
+  const int lyrics_line_spacing = s.value(ContextSettings::kLyricsLineSpacing, ContextSettings::kDefaultLyricsLineSpacing).toInt();
+  textedit_play_lyrics_->SetLineSpacing(lyrics_line_spacing);
   s.endGroup();
 
   UpdateFonts();
@@ -647,12 +650,14 @@ void ContextView::SetLyrics(const QString &lyrics, const QString &provider) {
       int block_idx = 0;
       for (SyncedLyric& sl : synced_lyrics_) {
          sl.block_idx = block_idx++;
-         clean_lyrics += sl.text + u'\n';
+         clean_lyrics += sl.text.trimmed() + u'\n';
       }
       lyrics_ = clean_lyrics.trimmed();
     } else {
       synced_lyrics_.clear();
-      lyrics_ = lyrics.trimmed();
+      QStringList raw_lyrics_lines = lyrics.trimmed().split(u'\n');
+      for (QString &line : raw_lyrics_lines) line = line.trimmed();
+      lyrics_ = raw_lyrics_lines.join(u'\n').trimmed();
     }
     
     if (!provider.isEmpty()) {
@@ -689,8 +694,9 @@ void ContextView::UpdateTrackPosition(qint64 nanoseconds) {
     if (active_line >= 0) {
       QList<QTextEdit::ExtraSelection> selections;
       QTextEdit::ExtraSelection selection;
-      selection.format.setForeground(palette().highlight());
+      selection.format.setForeground(Qt::white);
       selection.format.setFontWeight(QFont::Bold);
+      selection.format.setTextOutline(QPen(QColor(255, 255, 255, 100), 1));
 
       QTextCursor cursor = textedit_play_lyrics_->textCursor();
       cursor.movePosition(QTextCursor::Start);

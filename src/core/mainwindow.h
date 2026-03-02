@@ -90,6 +90,7 @@ class Ui_MainWindow;
 class StreamingSongsView;
 class StreamingTabsView;
 class SmartPlaylistsViewContainer;
+class QGraphicsDropShadowEffect;
 #ifdef Q_OS_WIN32
 class Windows7ThumbBar;
 #endif
@@ -126,6 +127,7 @@ class MainWindow : public QMainWindow, public PlatformInterface {
 #ifdef Q_OS_WIN32
   bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 #endif
+  void paintEvent(QPaintEvent *e) override;
 
   // PlatformInterface
   void Activate() override;
@@ -259,6 +261,7 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   void ShowCover();
   void SearchCoverAutomatically();
   void AlbumCoverLoaded(const Song &song, const AlbumCoverLoaderResult &result);
+  void UpdateBlurredBackground(const Song &song, const QImage &image);
 
   void ScrobblingEnabledChanged(const bool value);
   void ScrobbleButtonVisibilityChanged(const bool value);
@@ -398,6 +401,9 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   BehaviourSettings::PlaylistAddBehaviour doubleclick_playlist_addmode_;
   BehaviourSettings::PlayBehaviour menu_playmode_;
 
+  QGraphicsDropShadowEffect *bloom_player_controls_ = nullptr;
+  QGraphicsDropShadowEffect *bloom_playing_widget_ = nullptr;
+
   bool initialized_;
   bool was_maximized_;
   bool was_minimized_;
@@ -405,11 +411,13 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   Song song_;
   Song song_playing_;
   AlbumCoverImageResult album_cover_;
+  QPixmap window_background_pixmap_;
   bool exit_;
   int exit_count_;
   bool playlists_loaded_;
   bool delete_files_;
   std::optional<CommandlineOptions> options_;
+
 
   class MetadataQueueEntry {
    public:

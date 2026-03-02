@@ -169,6 +169,7 @@ void FancyTabBar::paintEvent(QPaintEvent *pe) {
   const bool vertical_text_tabs = tabWidget->mode() == FancyTabWidget::Mode::SmallSidebar;
 
   QStylePainter p(this);
+  p.eraseRect(rect());  // erase to show through background
 
   for (int index = 0; index < count(); ++index) {
     const bool selected = tabWidget->currentIndex() == index;

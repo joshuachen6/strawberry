@@ -40,6 +40,7 @@
 #include <QtEvents>
 
 #include "core/settings.h"
+#include <QPainterPath>
 #include "utilities/imageutils.h"
 #include "covermanager/albumcoverchoicecontroller.h"
 #include "playingwidget.h"
@@ -80,9 +81,16 @@ PlayingWidget::PlayingWidget(QWidget *parent)
       fit_width_(false),
       timeline_show_hide_(new QTimeLine(500, this)),
       timeline_fade_(new QTimeLine(1000, this)),
+      timeline_rotate_(new QTimeLine(3000, this)),
       details_(new QTextDocument(this)),
       pixmap_previous_track_opacity_(0.0),
       downloading_covers_(false) {
+
+  timeline_rotate_->setFrameRange(0, 3600);
+  timeline_rotate_->setLoopCount(0); // Infinite loop
+  timeline_rotate_->setEasingCurve(QEasingCurve::Linear);
+  QObject::connect(timeline_rotate_, &QTimeLine::valueChanged, this, [this]() { update(); });
+  timeline_rotate_->start();
 
   SetHeight(0);
 
@@ -258,7 +266,22 @@ void PlayingWidget::ShowAboveStatusBar(const bool above) {
 
 }
 
-void PlayingWidget::Playing() {}
+void PlayingWidget::Playing() {
+  if (song_.bpm() > 0) {
+    // 1 rotation = roughly 4 beats. So duration = (60 / BPM) * 4 * 1000 ms.
+    // Clamp it to reasonable bounds (e.g. at least 1000ms, at most 10000ms)
+    int duration_ms = static_cast<int>((60.0 / song_.bpm()) * 4.0 * 1000);
+    duration_ms = qBound(1000, duration_ms, 10000);
+    timeline_rotate_->setDuration(duration_ms);
+  } else {
+    timeline_rotate_->setDuration(3000);
+  }
+  timeline_rotate_->setPaused(false);
+}
+
+void PlayingWidget::Paused() {
+  timeline_rotate_->setPaused(true);
+}
 
 void PlayingWidget::Stopped() {
 
@@ -267,6 +290,7 @@ void PlayingWidget::Stopped() {
   song_playing_ = Song();
   song_ = Song();
   image_current_ = QImage();
+  timeline_rotate_->setPaused(true);
   SetVisible(false);
 
 }
@@ -458,14 +482,69 @@ void PlayingWidget::DrawContents(QPainter *p) {
       p->translate(-small_ideal_height_ - kPadding, 0);
       break;
 
-    case Mode::LargeSongDetails:
+    case Mode::LargeSongDetails: {
       // Work out how high the text is going to be
       const int text_height = static_cast<int>(details_->size().height());
       const int cover_size = fit_width_ ? width() : qMin(kMaxCoverSize, width());
       const int x_offset = (width() - desired_height_) / 2;
+      
+      // THE VINYL REEL PLAYBACK CANVAS!
+      p->save();
+      // Draw a separator line at the top
+      p->setPen(QPen(QColor(255, 255, 255, 30)));
+      p->drawLine(0, 0, width(), 0);
 
-      // Draw the cover
-      p->drawPixmap(x_offset, kTopBorder, cover_size, cover_size, pixmap_cover_);
+      p->translate(x_offset + cover_size / 2.0, kTopBorder + cover_size / 2.0);
+      
+      // Rotate if it's currently active/playing
+      qreal rot = 0;
+      if (active_ && timeline_rotate_) {
+          rot = timeline_rotate_->currentValue() * 360.0;
+      }
+      p->rotate(rot);
+
+      // Draw the jet-black vinyl base
+      p->setPen(Qt::NoPen);
+      p->setBrush(QColor(15, 15, 15));
+      p->drawEllipse(-cover_size / 2.0, -cover_size / 2.0, cover_size, cover_size);
+
+      // Draw a subtle outer highlight rim
+      p->setPen(QPen(QColor(80, 80, 80, 100), 1.5));
+      p->setBrush(Qt::NoBrush);
+      p->drawEllipse(-cover_size / 2.0 + 1, -cover_size / 2.0 + 1, cover_size - 2, cover_size - 2);
+
+      // Draw 3D-like vinyl grooves
+      p->setPen(QPen(QColor(30, 30, 30, 150), 0.5));
+      const int groove_count = 12;
+      for (int i = 2; i < groove_count; ++i) {
+          double scale = (double)i / groove_count;
+          double size = cover_size * scale;
+          // Add alternating subtle highlight to groves to simulate lighting
+          if (i % 2 == 0) p->setPen(QPen(QColor(45, 45, 45, 100), 1));
+          else p->setPen(QPen(QColor(10, 10, 10, 150), 0.5));
+          p->drawEllipse(-size / 2.0, -size / 2.0, size, size);
+      }
+
+      // Draw the actual album art cropped circularly in the center as the vinyl label
+      QPainterPath path;
+      double center_size = cover_size * 0.45; 
+      path.addEllipse(-center_size / 2.0, -center_size / 2.0, center_size, center_size);
+      p->setClipPath(path);
+
+      if (!pixmap_cover_.isNull()) {
+         QPixmap scaled_cover = pixmap_cover_.scaled(center_size*devicePixelRatioF(), center_size*devicePixelRatioF(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+         scaled_cover.setDevicePixelRatio(devicePixelRatioF());
+         p->drawPixmap(-center_size / 2.0, -center_size / 2.0, center_size, center_size, scaled_cover);
+      }
+
+      // Draw the inner spindle hole
+      p->setClipping(false);
+      p->setBrush(QColor(5, 5, 5));
+      p->setPen(QPen(QColor(60, 60, 60, 150), 1));
+      p->drawEllipse(-4, -4, 8, 8);
+
+      p->restore();
+
       if (downloading_covers_) {
         p->drawPixmap(x_offset + 45, 35, 16, 16, spinner_animation_->currentPixmap());
       }
@@ -478,6 +557,7 @@ void PlayingWidget::DrawContents(QPainter *p) {
       }
 
       break;
+    }
   }
 
 }

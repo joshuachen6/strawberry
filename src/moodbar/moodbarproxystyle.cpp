@@ -34,6 +34,7 @@
 #include <QStyleOptionSlider>
 #include <QTimeLine>
 #include <QStyle>
+#include <QPainterPath>
 #include <QMenu>
 #include <QAction>
 #include <QActionGroup>
@@ -381,20 +382,25 @@ QPixmap MoodbarProxyStyle::MoodbarPixmap(const ColorVector &colors, const QSize 
   QSize physical_size(size.width() * dpr, size.height() * dpr);
   QPixmap ret(physical_size);
   ret.setDevicePixelRatio(dpr);
-  ret.fill(palette.color(QPalette::Active, QPalette::Window)); // Fix for background garbage artifacts
+  ret.fill(Qt::transparent); // Fix for background garbage artifacts
   QPainter p(&ret);
 
   // Draw the moodbar
+  p.setRenderHint(QPainter::Antialiasing);
+  QPainterPath path;
+  path.addRoundedRect(inner_rect, 4, 4);
+  p.setClipPath(path);
   MoodbarRenderer::Render(colors, &p, inner_rect);
 
   // Draw the border
+  p.setClipping(false);
   p.setPen(QPen(Qt::black, kBorderSize, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
-  p.drawRect(border_rect.adjusted(0, 0, -1, -1));
+  p.drawRoundedRect(border_rect.adjusted(0, 0, -1, -1), 4, 4);
 
   // Draw the outer bit
   p.setPen(QPen(palette.brush(QPalette::Active, QPalette::Window), kMarginSize, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
 
-  p.drawRect(rect.adjusted(1, 1, -2, -2));
+  p.drawRoundedRect(rect.adjusted(1, 1, -2, -2), 6, 6);
 
   p.end();
 

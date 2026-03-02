@@ -572,25 +572,29 @@ MainWindow::MainWindow(Application *app,
   // Setup Glass Styling & Transparency Filter (applied once)
   struct GlassDialogFilter : public QObject {
     bool eventFilter(QObject *obj, QEvent *ev) override {
-      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show) {
+      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show || ev->type() == QEvent::ChildAdded) {
         if (QDialog *dialog = qobject_cast<QDialog*>(obj)) {
-          // Temporarily disable transparency to fix overlap/ghosting as per user request
-          dialog->setAttribute(Qt::WA_TranslucentBackground, false);
-          dialog->setAttribute(Qt::WA_NoSystemBackground, false);
-          dialog->setAutoFillBackground(true);
+          dialog->setAttribute(Qt::WA_TranslucentBackground, true);
+          dialog->setAttribute(Qt::WA_NoSystemBackground, true);
+          dialog->setAttribute(Qt::WA_OpaquePaintEvent, false);
+          dialog->setAutoFillBackground(false);
           
-          QPalette pal = dialog->palette();
-          pal.setColor(QPalette::Window, QColor(28, 28, 35, 230)); // Dense frosted look
-          dialog->setPalette(pal);
+          if (ev->type() == QEvent::Show) {
+            // Linux quirk: Delay slightly to ensure attributes stick after window creation
+            QTimer::singleShot(1, dialog, [dialog]() {
+              dialog->setAttribute(Qt::WA_TranslucentBackground, true);
+              dialog->update();
+            });
+          }
 
           dialog->setStyleSheet(QStringLiteral(
-            "QDialog { background: transparent; border: 1px solid rgba(255, 255, 255, 35); border-radius: 12px; } "
+            "QDialog { background: transparent; border: 1px solid rgba(255, 255, 255, 30); border-radius: 12px; } "
             "QLabel, QCheckBox, QRadioButton { background: transparent; color: white; } "
-            "QTextEdit, QPlainTextEdit, QTreeView, QListView, QTableView, QAbstractItemView, QStackedWidget { background: rgba(0, 0, 0, 40); border-radius: 4px; border: none; } "
+            "QTextEdit, QPlainTextEdit, QTreeView, QListView, QTableView, QAbstractItemView, QStackedWidget { background: rgba(0, 0, 0, 30); border-radius: 4px; border: none; } "
             "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; } "
-            "QTabWidget::pane { border: 1px solid rgba(255, 255, 255, 20); background: transparent; } "
-            "QTabBar::tab { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 25); padding: 8px 16px; border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; } "
-            "QTabBar::tab:selected { background: rgba(255, 255, 255, 35); } "
+            "QTabWidget::pane { border: 1px solid rgba(255, 255, 255, 15); background: transparent; } "
+            "QTabBar::tab { background: rgba(255, 255, 255, 10); border: 1px solid rgba(255, 255, 255, 20); padding: 8px 16px; border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; } "
+            "QTabBar::tab:selected { background: rgba(255, 255, 255, 30); } "
             "QGroupBox { background: rgba(255, 255, 255, 12); border: 1px solid rgba(255, 255, 255, 20); border-radius: 8px; margin-top: 15px; padding-top: 15px; } "
             "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 35); border-radius: 4px; padding: 5px; color: white; } "
             "QComboBox QAbstractItemView { background: rgb(35, 35, 40); selection-background-color: rgba(255, 255, 255, 45); } "
@@ -599,9 +603,19 @@ MainWindow::MainWindow(Application *app,
           ));
         }
       }
+      
+      if (ev->type() == QEvent::Paint) {
+        if (QDialog *dialog = qobject_cast<QDialog*>(obj)) {
+          QPainter p(dialog);
+          p.setCompositionMode(QPainter::CompositionMode_Source);
+          p.fillRect(dialog->rect(), QColor(25, 25, 30, 180)); // More transparent
+          p.end();
+        }
+      }
       return false;
     }
   };
+
 
   qApp->installEventFilter(new GlassDialogFilter());
 

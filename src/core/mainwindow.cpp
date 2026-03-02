@@ -44,8 +44,7 @@
 #include <QList>
 #include <QPainter>
 #include <QSet>
-#include <QVariant>
-#include <QString>
+#include <QJsonArray>
 #include <QStringList>
 #include <QUrl>
 #include <QIcon>
@@ -413,6 +412,7 @@ MainWindow::MainWindow(Application *app,
 
   // Initialize the UI
   ui_->setupUi(this);
+  setAttribute(Qt::WA_TranslucentBackground, true);
 
   if (QGuiApplication::platformName() != "wayland"_L1) {
     setWindowIcon(IconLoader::Load(u"strawberry"_s));
@@ -574,25 +574,38 @@ MainWindow::MainWindow(Application *app,
     bool eventFilter(QObject *obj, QEvent *ev) override {
       if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show) {
         if (QDialog *dialog = qobject_cast<QDialog*>(obj)) {
-          dialog->setAttribute(Qt::WA_TranslucentBackground);
-          dialog->setAttribute(Qt::WA_NoSystemBackground);
+          // Temporarily disable transparency to fix overlap/ghosting as per user request
+          dialog->setAttribute(Qt::WA_TranslucentBackground, false);
+          dialog->setAttribute(Qt::WA_NoSystemBackground, false);
+          dialog->setAutoFillBackground(true);
+          
+          QPalette pal = dialog->palette();
+          pal.setColor(QPalette::Window, QColor(28, 28, 35, 230)); // Dense frosted look
+          dialog->setPalette(pal);
+
           dialog->setStyleSheet(QStringLiteral(
-            "QDialog { background: rgba(20, 20, 25, 210); border: 1px solid rgba(255, 255, 255, 30); border-radius: 12px; } "
-            "QWidget { background: transparent; color: white; } "
-            "QTreeWidget, QListWidget, QTableWidget, QStackedWidget, QScrollArea, QWidget#qt_scrollarea_viewport, QWidget#qt_scrollarea_content { background: transparent; border: none; } "
-            "QGroupBox { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 25); border-radius: 8px; margin-top: 15px; padding-top: 10px; } "
-            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; } "
-            "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: rgba(255, 255, 255, 25); border: 1px solid rgba(255, 255, 255, 40); border-radius: 4px; padding: 2px; color: white; } "
-            "QComboBox QAbstractItemView { background: rgba(25, 25, 30, 240); border: 1px solid rgba(255, 255, 255, 30); selection-background-color: rgba(255, 255, 255, 40); } "
-            "QPushButton { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 40); border-radius: 4px; padding: 4px 10px; color: white; } "
-            "QPushButton:hover { background: rgba(255, 255, 255, 50); } "
+            "QDialog { background: transparent; border: 1px solid rgba(255, 255, 255, 35); border-radius: 12px; } "
+            "QLabel, QCheckBox, QRadioButton { background: transparent; color: white; } "
+            "QTextEdit, QPlainTextEdit, QTreeView, QListView, QTableView, QAbstractItemView, QStackedWidget { background: rgba(0, 0, 0, 40); border-radius: 4px; border: none; } "
+            "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; } "
+            "QTabWidget::pane { border: 1px solid rgba(255, 255, 255, 20); background: transparent; } "
+            "QTabBar::tab { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 25); padding: 8px 16px; border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; } "
+            "QTabBar::tab:selected { background: rgba(255, 255, 255, 35); } "
+            "QGroupBox { background: rgba(255, 255, 255, 12); border: 1px solid rgba(255, 255, 255, 20); border-radius: 8px; margin-top: 15px; padding-top: 15px; } "
+            "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 35); border-radius: 4px; padding: 5px; color: white; } "
+            "QComboBox QAbstractItemView { background: rgb(35, 35, 40); selection-background-color: rgba(255, 255, 255, 45); } "
+            "QPushButton { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 35); border-radius: 6px; padding: 6px 18px; color: white; } "
+            "QPushButton:hover { background: rgba(255, 255, 255, 30); } "
           ));
         }
       }
       return false;
     }
   };
+
   qApp->installEventFilter(new GlassDialogFilter());
+
+
 
   // Player controls layout stability
   ui_->player_controls_container->layout()->setContentsMargins(10, 10, 10, 10);
@@ -1268,6 +1281,7 @@ MainWindow::MainWindow(Application *app,
   CheckFullRescanRevisions();
 
   CommandlineOptionsReceived(options);
+  QTimer::singleShot(10, this, [this]() { UpdateBlurredBackground(Song(), QImage()); });
 
   if (app_->scrobbler()->enabled() && !app_->scrobbler()->offline()) {
     app_->scrobbler()->Submit();
@@ -3520,28 +3534,31 @@ void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) 
     
     // Bloom effect logic: update existing objects or create them efficiently
     QImage scaled1x1 = image.scaled(1, 1, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    QColor avg_color = scaled1x1.pixelColor(0, 0);
-    
-    int h = 0, s = 0, v = 0;
-    avg_color.getHsv(&h, &s, &v);
-    if (h < 0) h = 0;
-    s = qMin(255, s + 100);
-    v = qMin(255, qMax(180, v + 50));
-    QColor bloom_color = QColor::fromHsv(h, s, v);
-    
-    auto update_bloom = [bloom_color](QWidget *target, QGraphicsDropShadowEffect **effect_ptr) {
-        if (!*effect_ptr) {
-            *effect_ptr = new QGraphicsDropShadowEffect(target);
-            (*effect_ptr)->setBlurRadius(30);
-            (*effect_ptr)->setOffset(0, 0);
-            target->setGraphicsEffect(*effect_ptr);
-        }
-        (*effect_ptr)->setColor(bloom_color);
-    };
-    
-    update_bloom(ui_->player_controls, &bloom_player_controls_);
-    update_bloom(ui_->widget_playing, &bloom_playing_widget_);
+    if (!scaled1x1.isNull()) {
+        QColor avg_color = scaled1x1.pixelColor(0, 0);
+        int h = 0, s = 0, v = 0;
+        avg_color.getHsv(&h, &s, &v);
+        // Ensure valid HSV ranges and handle grayscale case (-1 hue)
+        h = qBound(0, (h < 0 ? 0 : h), 359);
+        s = qBound(0, s + 100, 255);
+        v = qBound(0, qMax(180, v + 50), 255);
+        QColor bloom_color = QColor::fromHsv(h, s, v);
+
+        auto update_bloom = [bloom_color](QWidget *target, QGraphicsDropShadowEffect **effect_ptr) {
+            if (!*effect_ptr) {
+                *effect_ptr = new QGraphicsDropShadowEffect(target);
+                (*effect_ptr)->setBlurRadius(30);
+                (*effect_ptr)->setOffset(0, 0);
+                target->setGraphicsEffect(*effect_ptr);
+            }
+            (*effect_ptr)->setColor(bloom_color);
+        };
+
+        update_bloom(ui_->player_controls, &bloom_player_controls_);
+        update_bloom(ui_->widget_playing, &bloom_playing_widget_);
+    }
   }
+
 
   // Re-apply global glass style every time to ensure transparency persists
   setStyleSheet(QStringLiteral(
@@ -3577,11 +3594,21 @@ void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) 
 
 
 void MainWindow::paintEvent(QPaintEvent *e) {
-  QMainWindow::paintEvent(e);
+  Q_UNUSED(e);
+  QPainter p(this);
   
+  // Clear background with semi-transparent base for glass effect
+  p.setCompositionMode(QPainter::CompositionMode_Source);
+  if (window_background_pixmap_.isNull()) {
+    // Frosted glass look when no song is playing
+    p.fillRect(rect(), QColor(26, 26, 31, 225)); 
+  } else {
+    // Transparent glass depth when playing
+    p.fillRect(rect(), QColor(10, 10, 15, 140));
+  }
+  p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+
   if (!window_background_pixmap_.isNull()) {
-    QPainter p(this);
-    
     double widgetAspect = static_cast<double>(rect().width()) / rect().height();
     double pixmapAspect = static_cast<double>(window_background_pixmap_.width()) / window_background_pixmap_.height();
     
@@ -3590,18 +3617,25 @@ void MainWindow::paintEvent(QPaintEvent *e) {
     
     if (widgetAspect > pixmapAspect) {
         drawWidth = window_background_pixmap_.width();
-        drawHeight = drawWidth / widgetAspect;
+        drawHeight = static_cast<int>(drawWidth / widgetAspect);
         yOffset = (window_background_pixmap_.height() - drawHeight) / 2;
     } else {
         drawHeight = window_background_pixmap_.height();
-        drawWidth = drawHeight * widgetAspect;
+        drawWidth = static_cast<int>(drawHeight * widgetAspect);
         xOffset = (window_background_pixmap_.width() - drawWidth) / 2;
     }
     
-    QRect sourceRect(xOffset, yOffset, drawWidth, drawHeight);
-    p.drawPixmap(rect(), window_background_pixmap_, sourceRect);
+    p.drawPixmap(rect(), window_background_pixmap_, QRect(xOffset, yOffset, drawWidth, drawHeight));
+    
+    // Gradient overlay for better text contrast
+    QLinearGradient grad(0, 0, 0, height());
+    grad.setColorAt(0, QColor(0, 0, 0, 80));
+    grad.setColorAt(0.5, QColor(0, 0, 0, 0));
+    grad.setColorAt(1, QColor(0, 0, 0, 120));
+    p.fillRect(rect(), grad);
   }
 }
+
 
 void MainWindow::GetCoverAutomatically() {
 

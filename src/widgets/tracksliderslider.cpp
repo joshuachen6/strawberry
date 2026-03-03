@@ -49,7 +49,8 @@ TrackSliderSlider::TrackSliderSlider(QWidget *parent)
       mouse_hover_seconds_(0),
       wheel_accumulator_(0),
       fluid_timer_(new QTimer(this)),
-      fluid_offset_(0.0) {
+      fluid_offset_(0.0),
+      is_playing_(false) {
 
   setMouseTracking(true);
 #ifndef Q_OS_MACOS
@@ -58,7 +59,7 @@ TrackSliderSlider::TrackSliderSlider(QWidget *parent)
 #endif
 
   QObject::connect(fluid_timer_, &QTimer::timeout, this, [this]() {
-    if (maximum() > minimum()) {
+    if (maximum() > minimum() && is_playing_) {
       fluid_offset_ -= 0.08;
       update();
     }

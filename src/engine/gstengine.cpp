@@ -1033,11 +1033,12 @@ void GstEngine::UpdateScope(const int chunk_length) {
   using sample_type = EngineBase::Scope::value_type;
 
   // Prevent dbz or invalid chunk size
+  if (!latest_buffer_) return;
   if (!GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(latest_buffer_))) return;
   if (GST_BUFFER_DURATION(latest_buffer_) == 0) return;
 
   GstMapInfo map;
-  gst_buffer_map(latest_buffer_, &map, GST_MAP_READ);
+  if (!gst_buffer_map(latest_buffer_, &map, GST_MAP_READ)) return;
 
   // Determine where to split the buffer
   int chunk_density = static_cast<int>((map.size * kNsecPerMsec) / GST_BUFFER_DURATION(latest_buffer_));
@@ -1053,16 +1054,23 @@ void GstEngine::UpdateScope(const int chunk_length) {
 
   const sample_type *source = reinterpret_cast<sample_type*>(map.data);
   sample_type *dest = scope_.data();
-  source += (chunk_size / sizeof(sample_type)) * scope_chunk_;
+  
+  qint64 offset_bytes = static_cast<qint64>(chunk_size) * scope_chunk_;
+  qint64 remaining_bytes = static_cast<qint64>(map.size) - offset_bytes;
 
   size_t bytes = 0;
 
-  // Make sure we don't go beyond the end of the buffer
-  if (scope_chunk_ == scope_chunks_ - 1) {
-    bytes = qMin(static_cast<EngineBase::Scope::size_type>(map.size - (chunk_size * scope_chunk_)), scope_.size() * sizeof(sample_type));
-  }
-  else {
-    bytes = qMin(static_cast<EngineBase::Scope::size_type>(chunk_size), scope_.size() * sizeof(sample_type));
+  if (remaining_bytes > 0) {
+    source += offset_bytes / sizeof(sample_type);
+    
+    // Make sure we don't go beyond the end of the buffer
+    if (scope_chunk_ == scope_chunks_ - 1) {
+      bytes = qMin(static_cast<EngineBase::Scope::size_type>(remaining_bytes), scope_.size() * sizeof(sample_type));
+    }
+    else {
+      bytes = qMin(static_cast<EngineBase::Scope::size_type>(chunk_size), scope_.size() * sizeof(sample_type));
+      if (bytes > static_cast<size_t>(remaining_bytes)) bytes = static_cast<size_t>(remaining_bytes);
+    }
   }
 
   scope_chunk_++;

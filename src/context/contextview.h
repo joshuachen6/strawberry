@@ -85,6 +85,7 @@ class ContextView : public QWidget {
  Q_SIGNALS:
   void AlbumEnabledChanged();
   void SeekRequested(quint64 seconds);
+  void CurrentSyncedLyricChanged(const QString &lyric);
 
  private Q_SLOTS:
   void ActionShowAlbum();

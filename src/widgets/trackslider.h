@@ -57,6 +57,7 @@ class TrackSlider : public QWidget {
 
  public Q_SLOTS:
   void SetValue(const int elapsed, const int total);
+  void SetPlaying(const bool p);
   void SetStopped();
   void SetCanSeek(const bool can_seek);
   void Seek(const int gap);

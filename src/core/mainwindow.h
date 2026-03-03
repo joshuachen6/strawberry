@@ -207,6 +207,8 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   void Seeked(const qint64 microseconds);
   void UpdateTrackPosition();
   void UpdateTrackSliderPosition();
+  void UpdateLyricAnimation();
+  void CurrentSyncedLyricChanged(const QString &lyric);
 
   void TaskCountChanged(const int count);
 
@@ -390,6 +392,7 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   QTimer *track_position_timer_;
   QTimer *track_slider_timer_;
   QTimer *metadata_queue_timer_;
+  QTimer *lyric_animation_timer_;
 
   bool keep_running_;
   bool playing_widget_;
@@ -412,6 +415,11 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   Song song_playing_;
   AlbumCoverImageResult album_cover_;
   QPixmap window_background_pixmap_;
+  QString active_lyric_;
+  QString previous_lyric_;
+  double lyric_fade_{1.0};
+  double lyric_pan_offset_{0.0};
+  double lyric_pulse_{0.0};
   bool exit_;
   int exit_count_;
   bool playlists_loaded_;

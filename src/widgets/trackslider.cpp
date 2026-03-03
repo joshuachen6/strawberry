@@ -158,8 +158,13 @@ void TrackSlider::UpdateTimes(const int elapsed) {
 
 }
 
+void TrackSlider::SetPlaying(const bool p) {
+  ui_->slider->set_playing(p);
+}
+
 void TrackSlider::SetStopped() {
 
+  SetPlaying(false);
   setEnabled(false);
   ui_->elapsed->setText(u"0:00:00"_s);
   ui_->remaining->setText(u"0:00:00"_s);

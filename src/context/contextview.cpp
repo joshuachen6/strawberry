@@ -674,11 +674,14 @@ void ContextView::SetLyrics(const QString &lyrics, const QString &provider) {
     textedit_play_lyrics_->hide();
   }
 
+  if (synced_lyrics_.isEmpty()) {
+    Q_EMIT CurrentSyncedLyricChanged(QString());
+  }
 }
 
 void ContextView::UpdateTrackPosition(qint64 nanoseconds) {
 
-  if (synced_lyrics_.isEmpty() || !textedit_play_lyrics_->isVisible()) return;
+  if (synced_lyrics_.isEmpty()) return;
 
   int active_line = -1;
   for (int i = 0; i < synced_lyrics_.size(); ++i) {
@@ -692,25 +695,32 @@ void ContextView::UpdateTrackPosition(qint64 nanoseconds) {
   if (active_line != current_synced_line_) {
     current_synced_line_ = active_line;
     if (active_line >= 0) {
-      QList<QTextEdit::ExtraSelection> selections;
-      QTextEdit::ExtraSelection selection;
-      selection.format.setForeground(Qt::white);
-      selection.format.setFontWeight(QFont::Bold);
-      selection.format.setTextOutline(QPen(QColor(255, 255, 255, 100), 1));
+      if (textedit_play_lyrics_->isVisible()) {
+        QList<QTextEdit::ExtraSelection> selections;
+        QTextEdit::ExtraSelection selection;
+        selection.format.setForeground(Qt::white);
+        selection.format.setFontWeight(QFont::Bold);
+        selection.format.setTextOutline(QPen(QColor(255, 255, 255, 100), 1));
 
-      QTextCursor cursor = textedit_play_lyrics_->textCursor();
-      cursor.movePosition(QTextCursor::Start);
-      cursor.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, synced_lyrics_[active_line].block_idx);
-      cursor.select(QTextCursor::LineUnderCursor);
-      selection.cursor = cursor;
-      selections.append(selection);
-      textedit_play_lyrics_->setExtraSelections(selections);
+        QTextCursor cursor = textedit_play_lyrics_->textCursor();
+        cursor.movePosition(QTextCursor::Start);
+        cursor.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, synced_lyrics_[active_line].block_idx);
+        cursor.select(QTextCursor::LineUnderCursor);
+        selection.cursor = cursor;
+        selections.append(selection);
+        textedit_play_lyrics_->setExtraSelections(selections);
 
-      QRect rect = textedit_play_lyrics_->cursorRect(cursor);
-      int y = textedit_play_lyrics_->mapTo(widget_scrollarea_, rect.topLeft()).y();
-      scrollarea_->ensureVisible(0, y + rect.height() / 2, 50, 50);
+        QRect rect = textedit_play_lyrics_->cursorRect(cursor);
+        int y = textedit_play_lyrics_->mapTo(widget_scrollarea_, rect.topLeft()).y();
+        scrollarea_->ensureVisible(0, y + rect.height() / 2, 50, 50);
+      }
+
+      Q_EMIT CurrentSyncedLyricChanged(synced_lyrics_[active_line].text.trimmed());
     } else {
-      textedit_play_lyrics_->setExtraSelections(QList<QTextEdit::ExtraSelection>());
+      if (textedit_play_lyrics_->isVisible()) {
+        textedit_play_lyrics_->setExtraSelections(QList<QTextEdit::ExtraSelection>());
+      }
+      Q_EMIT CurrentSyncedLyricChanged(QString());
     }
   }
 }

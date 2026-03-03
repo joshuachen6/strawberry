@@ -53,6 +53,8 @@
 #include <QTimer>
 #include <QKeySequence>
 #include <QMenu>
+#include <QPainterPath>
+#include <cmath>
 #include <QAction>
 #include <QActionGroup>
 #include <QShortcut>
@@ -391,6 +393,7 @@ MainWindow::MainWindow(Application *app,
       track_position_timer_(new QTimer(this)),
       track_slider_timer_(new QTimer(this)),
       metadata_queue_timer_(new QTimer(this)),
+      lyric_animation_timer_(new QTimer(this)),
       keep_running_(false),
       playing_widget_(true),
 #ifdef HAVE_DBUS
@@ -661,6 +664,11 @@ MainWindow::MainWindow(Application *app,
 
   track_position_timer_->setInterval(kTrackPositionUpdateTimeMs);
   QObject::connect(track_position_timer_, &QTimer::timeout, this, &MainWindow::UpdateTrackPosition);
+
+  // Lyric Animation timer setup
+  lyric_animation_timer_->setInterval(16); // ~60 FPS
+  QObject::connect(lyric_animation_timer_, &QTimer::timeout, this, &MainWindow::UpdateLyricAnimation);
+  lyric_animation_timer_->start();
   track_slider_timer_->setInterval(kTrackSliderUpdateTimeMs);
   QObject::connect(track_slider_timer_, &QTimer::timeout, this, &MainWindow::UpdateTrackSliderPosition);
 
@@ -1124,6 +1132,7 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(this, &MainWindow::SearchCoverInProgress, context_view_->album_widget(), &ContextAlbum::SearchCoverInProgress);
   QObject::connect(context_view_, &ContextView::AlbumEnabledChanged, this, &MainWindow::TabSwitched);
   QObject::connect(context_view_, &ContextView::SeekRequested, &*app_->player(), &Player::SeekTo);
+  QObject::connect(context_view_, &ContextView::CurrentSyncedLyricChanged, this, &MainWindow::CurrentSyncedLyricChanged);
 
   // Analyzer
   QObject::connect(ui_->analyzer, &AnalyzerContainer::WheelEvent, this, &MainWindow::VolumeWheelEvent);
@@ -1703,6 +1712,7 @@ void MainWindow::MediaPaused() {
   }
 
   systemtrayicon_->SetPaused();
+  ui_->track_slider->SetPlaying(false);
 
 }
 
@@ -1723,6 +1733,7 @@ void MainWindow::MediaPlaying() {
   }
   ui_->action_play_pause->setEnabled(enable_play_pause);
   ui_->track_slider->SetCanSeek(can_seek);
+  ui_->track_slider->SetPlaying(true);
   systemtrayicon_->SetPlaying(enable_play_pause);
 
   if (!track_position_timer_->isActive()) {
@@ -3607,6 +3618,51 @@ void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) 
 }
 
 
+void MainWindow::UpdateLyricAnimation() {
+  if (lyric_fade_ < 1.0) {
+    lyric_fade_ += 0.08; // Faster overall transition speed
+    if (lyric_fade_ > 1.0) lyric_fade_ = 1.0;
+  }
+
+  double audio_pulse = 0.0;
+  if (app_ && app_->player() && app_->player()->GetState() == EngineBase::State::Playing) {
+    // Very slow pan (drift) only occurs while playing
+    lyric_pan_offset_ += 0.2;
+    
+    if (app_->player()->engine()) {
+    const auto &scope = app_->player()->engine()->scope(1024);
+    size_t safe_size = scope.size();
+    if (safe_size > 0) {
+        double sum = 0.0;
+        // Access via index to avoid iterator invalidation if the vector is resized while iterating
+        for (size_t i = 0; i < safe_size && i < scope.size(); ++i) {
+            double s = static_cast<double>(scope[i]);
+            sum += s * s;
+        }
+        double rms = std::sqrt(sum / safe_size);
+        audio_pulse = rms / 32768.0;
+      }
+    }
+    
+    // Smooth the pulse so it doesn't flicker nervously 
+    // and clamp safely to prevent infinite sizes or NaNs
+    double new_pulse = lyric_pulse_ * 0.8 + audio_pulse * 0.2;
+    if (std::isnan(new_pulse)) new_pulse = 0.0;
+    lyric_pulse_ = qBound(0.0, new_pulse, 1.0);
+    
+    update();
+  }
+}
+
+void MainWindow::CurrentSyncedLyricChanged(const QString &lyric) {
+  if (active_lyric_ != lyric) {
+    previous_lyric_ = active_lyric_;
+    active_lyric_ = lyric;
+    lyric_fade_ = 0.0;
+    update();
+  }
+}
+
 void MainWindow::paintEvent(QPaintEvent *e) {
   Q_UNUSED(e);
   QPainter p(this);
@@ -3639,16 +3695,148 @@ void MainWindow::paintEvent(QPaintEvent *e) {
         xOffset = (window_background_pixmap_.width() - drawWidth) / 2;
     }
     
-    p.drawPixmap(rect(), window_background_pixmap_, QRect(xOffset, yOffset, drawWidth, drawHeight));
+    QRect sourceRect(xOffset, yOffset, drawWidth, drawHeight);
+
+    // 1. Draw blurred background deeply darkened
+    p.drawPixmap(rect(), window_background_pixmap_, sourceRect);
     
     // Gradient overlay for better text contrast
     QLinearGradient grad(0, 0, 0, height());
-    grad.setColorAt(0, QColor(0, 0, 0, 80));
-    grad.setColorAt(0.5, QColor(0, 0, 0, 0));
-    grad.setColorAt(1, QColor(0, 0, 0, 120));
+    grad.setColorAt(0, QColor(0, 0, 0, 140));
+    grad.setColorAt(0.5, QColor(0, 0, 0, 80));
+    grad.setColorAt(1, QColor(0, 0, 0, 200));
     p.fillRect(rect(), grad);
+
+    // 2. Cinematic Typography "Living Lyric" Mask Effect
+    if (!album_cover_.image.isNull() && (!active_lyric_.isEmpty() || !previous_lyric_.isEmpty())) {
+      p.save();
+      p.setRenderHint(QPainter::Antialiasing);
+
+      QRect playlistRect = rect();
+      // Clip to playlist layout so it doesn't overlap the sidebar/album cover
+      if (ui_->playlist_layout) {
+          playlistRect = QRect(ui_->playlist_layout->mapTo(this, QPoint(0,0)), ui_->playlist_layout->size());
+          p.setClipRect(playlistRect, Qt::IntersectClip);
+      }
+
+      // Hero font
+      QFont heroFont = font();
+      int baseSize = qMax(40, height() / 16);
+      heroFont.setPointSize(baseSize); // Fixed text generation size!
+      heroFont.setBold(true);
+
+      // Draw active and previous lyrics for crossfade
+      auto drawLyric = [&](const QString &text, double opacity) {
+        if (text.isEmpty() || opacity <= 0.0) return;
+
+        QPainterPath textPath;
+        
+        // Add slow drift pan based on offset
+        // Smooth continuous drift without snapping
+        double driftX = 15.0 * std::sin(lyric_pan_offset_ * 0.02);
+        double driftY = 10.0 * std::cos(lyric_pan_offset_ * 0.015);
+        
+        QFontMetrics fm(heroFont);
+        QStringList lines = text.split(u'\n');
+        QStringList wrappedLines;
+        
+        for (const QString &line : lines) {
+            if (fm.horizontalAdvance(line) > playlistRect.width() * 0.7) {
+                QStringList words = line.split(u' ');
+                QString currentLine;
+                for (const QString &word : words) {
+                    if (currentLine.isEmpty()) {
+                        currentLine = word;
+                    } else if (fm.horizontalAdvance(currentLine + u' ' + word) > playlistRect.width() * 0.7) {
+                        wrappedLines.append(currentLine);
+                        currentLine = word;
+                    } else {
+                        currentLine += u' ' + word;
+                    }
+                }
+                if (!currentLine.isEmpty()) wrappedLines.append(currentLine);
+            } else {
+                wrappedLines.append(line);
+            }
+        }
+
+        int y_pos = 0;
+        for (const QString &line : wrappedLines) {
+            int line_width = fm.horizontalAdvance(line);
+            textPath.addText(-line_width / 2.0, y_pos, heroFont, line);
+            y_pos += fm.lineSpacing();
+        }
+
+        // Apply visual pulse scale as a path transform instead of bumping font size logic 
+        // This ensures text wrapped blocks never suddenly reorganize halfway through a bounce
+        double pulseScale = 1.0 + lyric_pulse_ * 0.3;
+
+        // Center the path properly based on exact bounds
+        QRectF pathBounds = textPath.boundingRect();
+        QTransform t;
+        t.translate(playlistRect.center().x() + driftX, playlistRect.center().y() + driftY);
+        t.scale(pulseScale, pulseScale);
+        t.translate(-pathBounds.center().x(), -pathBounds.center().y());
+        textPath = t.map(textPath);
+
+        p.save();
+        p.setOpacity(opacity);
+
+        // Subtly glow/drop shadow the outside of the letters
+        p.setPen(QPen(QColor(0, 0, 0, 180), 8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(textPath);
+
+        // Mask the sharp album art inside the text
+        p.setClipPath(textPath);
+        
+        // Scale sharp album cover to fit EXACTLY like the blurred background
+        // The blurred background window_background_pixmap_ is a 1024x1024 image
+        // created by KeepAspectRatioByExpanding from album_cover_.image, and centered.
+        double scale = qMax(1024.0 / album_cover_.image.width(), 1024.0 / album_cover_.image.height());
+        double scaledWidth = album_cover_.image.width() * scale;
+        double scaledHeight = album_cover_.image.height() * scale;
+        double cropX = (scaledWidth - 1024.0) / 2.0;
+        double cropY = (scaledHeight - 1024.0) / 2.0;
+        
+        // sourceRect is the portion of window_background_pixmap_ being drawn to rect()
+        // We calculate the corresponding origin points in album_cover_.image
+        double imageSrcX = (sourceRect.x() + cropX) / scale;
+        double imageSrcY = (sourceRect.y() + cropY) / scale;
+        double imageSrcW = sourceRect.width() / scale;
+        double imageSrcH = sourceRect.height() / scale;
+        
+        QRectF sharpSrcRect(imageSrcX, imageSrcY, imageSrcW, imageSrcH);
+        
+        // Draw sharp image perfectly aligned mapped back to original native album art res
+        p.drawImage(rect(), album_cover_.image, sharpSrcRect);
+
+        // Optionally add a white overlay for "pulse" or glow
+        int pulseAlpha = qBound(0, static_cast<int>(20 + lyric_pulse_ * 60), 255);
+        p.fillRect(rect(), QColor(255, 255, 255, pulseAlpha)); // slight brightness boost to inner part
+
+        p.restore();
+      };
+
+      // Sequential fade out then fade in
+      double prevAlpha = 0.0;
+      if (lyric_fade_ < 0.3) {
+          prevAlpha = 1.0 - (lyric_fade_ / 0.3); // Fades out very quickly
+      }
+
+      double nextAlpha = 0.0;
+      if (lyric_fade_ > 0.5) {
+          nextAlpha = (lyric_fade_ - 0.5) / 0.5; // Fades in afterwards
+      }
+
+      drawLyric(previous_lyric_, prevAlpha);
+      drawLyric(active_lyric_, nextAlpha);
+
+      p.restore();
+    }
   }
 }
+
 
 
 void MainWindow::GetCoverAutomatically() {

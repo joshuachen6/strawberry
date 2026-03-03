@@ -42,6 +42,7 @@ class TrackSliderSlider : public QSlider {
 
  public:
   explicit TrackSliderSlider(QWidget *parent = nullptr);
+  void set_playing(bool p) { is_playing_ = p; }
 
  Q_SIGNALS:
   void SeekForward();
@@ -76,6 +77,7 @@ class TrackSliderSlider : public QSlider {
 
   class QTimer *fluid_timer_;
   double fluid_offset_;
+  bool is_playing_;
 };
 
 #endif  // TRACKSLIDERSLIDER_H

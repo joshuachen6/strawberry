@@ -57,6 +57,7 @@ class TrackSliderSlider : public QSlider {
   void enterEvent(QEnterEvent *e) override;
   void leaveEvent(QEvent *e) override;
   void keyPressEvent(QKeyEvent *event) override;
+  void paintEvent(QPaintEvent *e) override;
 
  private Q_SLOTS:
   void UpdateDeltaTime();
@@ -72,6 +73,9 @@ class TrackSliderSlider : public QSlider {
   int mouse_hover_seconds_;
 
   int wheel_accumulator_;
+
+  class QTimer *fluid_timer_;
+  double fluid_offset_;
 };
 
 #endif  // TRACKSLIDERSLIDER_H

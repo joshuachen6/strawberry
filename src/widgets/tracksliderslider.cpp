@@ -29,6 +29,10 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QEnterEvent>
+#include <QTimer>
+#include <QStylePainter>
+#include <QPainterPath>
+#include <cmath>
 
 #include "utilities/timeutils.h"
 #include "constants/timeconstants.h"
@@ -43,13 +47,23 @@ TrackSliderSlider::TrackSliderSlider(QWidget *parent)
       popup_(new TrackSliderPopup(window())),
 #endif
       mouse_hover_seconds_(0),
-      wheel_accumulator_(0) {
+      wheel_accumulator_(0),
+      fluid_timer_(new QTimer(this)),
+      fluid_offset_(0.0) {
 
   setMouseTracking(true);
 #ifndef Q_OS_MACOS
   popup_->hide();
   QObject::connect(this, &TrackSliderSlider::valueChanged, this, &TrackSliderSlider::UpdateDeltaTime);
 #endif
+
+  QObject::connect(fluid_timer_, &QTimer::timeout, this, [this]() {
+    if (maximum() > minimum()) {
+      fluid_offset_ -= 0.08;
+      update();
+    }
+  });
+  fluid_timer_->start(30);
 
 }
 
@@ -179,5 +193,78 @@ void TrackSliderSlider::UpdateDeltaTime() {
     popup_->SetSmallText(Utilities::PrettyTimeDelta(delta_seconds));
   }
 #endif
+
+}
+
+void TrackSliderSlider::paintEvent(QPaintEvent *e) {
+  Q_UNUSED(e);
+
+  // We draw the standard groove and handle, but we intermingle our fluid wave!
+  QStylePainter p(this);
+  QStyleOptionSlider opt;
+  initStyleOption(&opt);
+
+  // We want to detect if MoodbarProxyStyle is handling it. If so, and if moodbar is active,
+  // MoodbarProxyStyle::drawComplexControl will draw everything regardless of subControls.
+  // Actually, we can check if we have a proxy style that intercepts.
+  // But wait, it's safer to just do the normal Qt painting which works with standard styles.
+
+  opt.subControls = QStyle::SC_SliderGroove;
+  p.drawComplexControl(QStyle::CC_Slider, opt);
+
+  if (opt.maximum > opt.minimum) {
+    QRect grooveRect = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderGroove, this);
+    QRect handleRect = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
+
+    int playhead_x = handleRect.center().x();
+    QRect playedRect = grooveRect;
+    playedRect.setRight(playhead_x);
+
+    // Minor adjustment to look better inside the groove
+    playedRect.adjust(2, 2, 0, -2);
+
+    if (playedRect.width() > 0) {
+      p.save();
+      p.setClipRect(playedRect);
+      p.setRenderHint(QPainter::Antialiasing);
+
+      QColor color1 = palette().color(QPalette::Highlight);
+      color1.setAlpha(120);
+      QColor color2 = palette().color(QPalette::Highlight);
+      color2.setAlpha(180);
+
+      int width = playedRect.width();
+      int height = playedRect.height();
+      double amp = height / 3.0;
+
+      auto drawWave = [&](double phase1, double phase2, double phase3, QColor c, double baseFreq) {
+        QPainterPath path;
+        path.moveTo(playedRect.left(), playedRect.bottom());
+        for (int x = 0; x <= width; x += 2) {
+          // Complex ripple from multiple offset sine waves
+          double wave1 = std::sin(baseFreq * x + phase1);
+          double wave2 = std::sin(baseFreq * 1.618 * x + phase2) * 0.5;
+          double wave3 = std::sin(baseFreq * 0.618 * x + phase3) * 0.3;
+          double combined = (wave1 + wave2 + wave3) / 1.8;
+          double y = playedRect.center().y() + amp * combined;
+          path.lineTo(playedRect.left() + x, y);
+        }
+        path.lineTo(playedRect.right(), playedRect.bottom());
+        path.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawPath(path);
+      };
+
+      double freq = 2 * M_PI / 80.0;
+      drawWave(fluid_offset_, fluid_offset_ * 1.3, fluid_offset_ * 0.7, color1, freq);
+      drawWave(fluid_offset_ * 1.1 + M_PI, fluid_offset_ * 1.5 + M_PI/2, fluid_offset_ * 0.8 + M_PI, color2, freq * 1.1);
+
+      p.restore();
+    }
+  }
+
+  opt.subControls = QStyle::SC_SliderHandle;
+  p.drawComplexControl(QStyle::CC_Slider, opt);
 
 }

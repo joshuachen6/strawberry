@@ -616,13 +616,13 @@ void ContextView::SetLyrics(const QString &lyrics, const QString &provider) {
     lyrics_.clear();
   }
   else {
-    QRegularExpression re(u"\\[(\\d+):(\\d{2})(?:\\.(\\d{2,3}))?\\]"_s);
+    QRegularExpression re(u"[\\[<](\\d+):(\\d{2})(?:[\\.:](\\d{2,3}))?[\\]>]"_s);
     QStringList lines = lyrics.split(u'\n');
+    QStringList clean_lines;
     bool is_synced = false;
     
     for (const QString &line : std::as_const(lines)) {
       QList<qint64> timestamps;
-      QString text = line;
       QRegularExpressionMatchIterator i = re.globalMatch(line);
       while (i.hasNext()) {
         QRegularExpressionMatch match = i.next();
@@ -631,13 +631,21 @@ void ContextView::SetLyrics(const QString &lyrics, const QString &provider) {
         int msec = match.captured(3).isEmpty() ? 0 : match.captured(3).leftJustified(3, u'0').toInt();
         qint64 ts_nsec = (min * 60LL * 1000 + sec * 1000LL + msec) * 1000000LL;
         timestamps.append(ts_nsec);
-        text.remove(match.captured(0));
       }
       
+      QString text = line;
+      text.remove(re);
+      text = text.trimmed();
+      
+      if (text.isEmpty() && timestamps.isEmpty()) continue;
+
+      int block_idx = clean_lines.size();
+      clean_lines.append(text);
+
       if (!timestamps.isEmpty()) {
         is_synced = true;
         for (qint64 ts : std::as_const(timestamps)) {
-          synced_lyrics_.append({ts, text, 0});
+          synced_lyrics_.append({ts, text, block_idx});
         }
       }
     }
@@ -646,19 +654,9 @@ void ContextView::SetLyrics(const QString &lyrics, const QString &provider) {
       std::stable_sort(synced_lyrics_.begin(), synced_lyrics_.end(), [](const SyncedLyric& a, const SyncedLyric& b) {
           return a.timestamp_nsec < b.timestamp_nsec;
       });
-      QString clean_lyrics;
-      int block_idx = 0;
-      for (SyncedLyric& sl : synced_lyrics_) {
-         sl.block_idx = block_idx++;
-         clean_lyrics += sl.text.trimmed() + u'\n';
-      }
-      lyrics_ = clean_lyrics.trimmed();
-    } else {
-      synced_lyrics_.clear();
-      QStringList raw_lyrics_lines = lyrics.trimmed().split(u'\n');
-      for (QString &line : raw_lyrics_lines) line = line.trimmed();
-      lyrics_ = raw_lyrics_lines.join(u'\n').trimmed();
     }
+
+    lyrics_ = clean_lines.join(u'\n').trimmed();
     
     if (!provider.isEmpty()) {
       lyrics_ += "\n\n(Lyrics from "_L1 + provider + ")\n"_L1;

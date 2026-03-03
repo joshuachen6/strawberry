@@ -200,53 +200,77 @@ void CollectionBackend::LoadDirectories() {
 
 void CollectionBackend::ChangeDirPath(const int id, const QString &old_path, const QString &new_path) {
 
+  if (old_path == new_path) return;
+  qLog(Info) << "CollectionBackend::ChangeDirPath: migrating directory" << id << "from" << old_path << "to" << new_path;
+
   QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
   ScopedTransaction t(&db);
 
-  // Do the dirs table
+  // 1. Update root directory path
   {
     SqlQuery q(db);
     q.prepare(QStringLiteral("UPDATE %1 SET path=:path WHERE ROWID=:id").arg(dirs_table_));
     q.BindValue(u":path"_s, new_path);
     q.BindValue(u":id"_s, id);
-    if (!q.Exec()) {
-      db_->ReportErrors(q);
-      return;
-    }
+    if (!q.Exec()) { db_->ReportErrors(q); return; }
   }
 
-  const QByteArray old_url = QUrl::fromLocalFile(old_path).toEncoded();
-  const QByteArray new_url = QUrl::fromLocalFile(new_path).toEncoded();
-
-  const qint64 path_len = old_url.length();
-
-  // Do the subdirs table
+  // 2. Encoded URL migration (songs.url, subdirs.path)
   {
-    SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET path=:path || substr(path, %2) WHERE directory=:id").arg(subdirs_table_).arg(path_len));
-    q.BindValue(u":path"_s, new_url);
-    q.BindValue(u":id"_s, id);
-    if (!q.Exec()) {
-      db_->ReportErrors(q);
-      return;
-    }
+    const QByteArray old_url = QUrl::fromLocalFile(old_path).toEncoded();
+    const QByteArray new_url = QUrl::fromLocalFile(new_path).toEncoded();
+    const qint64 old_url_len = old_url.length();
+    
+    QByteArray old_url_slash = old_url;
+    if (!old_url_slash.endsWith('/')) old_url_slash.append('/');
+
+    QString url_match = u"(url = :old OR instr(url, :old_slash) = 1)"_s;
+    QString sub_match = u"(path = :old OR instr(path, :old_slash) = 1)"_s;
+
+    // Subdirs
+    SqlQuery q_sub(db);
+    q_sub.prepare(QStringLiteral("UPDATE %1 SET path=:new || substr(path, %2) WHERE directory_id=:id AND %3").arg(subdirs_table_).arg(old_url_len + 1).arg(sub_match));
+    q_sub.BindValue(u":new"_s, new_url);
+    q_sub.BindValue(u":old"_s, old_url);
+    q_sub.BindValue(u":old_slash"_s, old_url_slash);
+    q_sub.BindValue(u":id"_s, id);
+    if (!q_sub.Exec()) { db_->ReportErrors(q_sub); return; }
+
+    // Songs URL
+    SqlQuery q_url(db);
+    q_url.prepare(QStringLiteral("UPDATE %1 SET url=:new || substr(url, %2) WHERE directory_id=:id AND %3").arg(songs_table_).arg(old_url_len + 1).arg(url_match));
+    q_url.BindValue(u":new"_s, new_url);
+    q_url.BindValue(u":old"_s, old_url);
+    q_url.BindValue(u":old_slash"_s, old_url_slash);
+    q_url.BindValue(u":id"_s, id);
+    if (!q_url.Exec()) { db_->ReportErrors(q_url); return; }
   }
 
-  // Do the songs table
+  // 3. Plain Path migration (art_automatic, art_manual, cue_path)
   {
-    SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET url=:path || substr(url, %2) WHERE directory=:id").arg(songs_table_).arg(path_len));
-    q.BindValue(u":path"_s, new_url);
-    q.BindValue(u":id"_s, id);
-    if (!q.Exec()) {
-      db_->ReportErrors(q);
-      return;
+    const QString old_local = QDir::cleanPath(old_path);
+    const QString new_local = QDir::cleanPath(new_path);
+    const qint64 old_local_len = old_local.length();
+    
+    QString old_local_slash = old_local;
+    if (!old_local_slash.endsWith(u'/')) old_local_slash.append(u'/');
+
+    QString path_match = u"(%1 = :old OR instr(%1, :old_slash) = 1)"_s;
+
+    QStringList cols = { u"art_automatic"_s, u"art_manual"_s, u"cue_path"_s };
+    for (const QString &col : cols) {
+      SqlQuery q_path(db);
+      q_path.prepare(QStringLiteral("UPDATE %1 SET %2=:new || substr(%2, %3) WHERE directory_id=:id AND %4").arg(songs_table_, col).arg(old_local_len + 1).arg(path_match.arg(col)));
+      q_path.BindValue(u":new"_s, new_local);
+      q_path.BindValue(u":old"_s, old_local);
+      q_path.BindValue(u":old_slash"_s, old_local_slash);
+      q_path.BindValue(u":id"_s, id);
+      if (!q_path.Exec()) { db_->ReportErrors(q_path); return; }
     }
   }
 
   t.Commit();
-
 }
 
 CollectionDirectoryList CollectionBackend::GetAllDirectories() {

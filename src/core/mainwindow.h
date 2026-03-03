@@ -76,6 +76,7 @@ class Equalizer;
 class ErrorDialog;
 class FileView;
 class GlobalShortcutsManager;
+class GalaxyMapView;
 class MimeData;
 class OrganizeDialog;
 class PlaylistListContainer;
@@ -325,6 +326,7 @@ class MainWindow : public QMainWindow, public PlatformInterface {
 
   ContextView *context_view_;
   CollectionViewContainer *collection_view_;
+  GalaxyMapView *galaxymap_view_;
   FileView *file_view_;
   DeviceViewContainer *device_view_;
   PlaylistListContainer *playlist_list_;

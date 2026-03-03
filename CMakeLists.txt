@@ -418,6 +418,7 @@ endif()
 set(SOURCES
   src/core/logging.cpp
   src/core/mainwindow.cpp
+  src/galaxymap/galaxymapview.cpp
   src/core/application.cpp
   src/core/playerinterface.cpp
   src/core/player.cpp
@@ -835,6 +836,7 @@ set(SOURCES
 set(HEADERS
   src/core/logging.h
   src/core/mainwindow.h
+  src/galaxymap/galaxymapview.h
   src/core/application.h
   src/core/player.h
   src/core/playerinterface.h

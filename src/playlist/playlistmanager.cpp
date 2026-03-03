@@ -514,6 +514,14 @@ void PlaylistManager::InsertSongs(const int id, const SongList &songs, const int
 
 }
 
+void PlaylistManager::InsertSongsOrCollectionItems(const int id, const SongList &songs, const QString &playlist_name, const int pos, const bool play_now, const bool enqueue) {
+
+  Q_ASSERT(playlists_.contains(id));
+
+  playlists_[id].p->InsertSongsOrCollectionItems(songs, playlist_name, pos, play_now, enqueue);
+
+}
+
 void PlaylistManager::RemoveItemsWithoutUndo(const int id, const QList<int> &indices) {
 
   Q_ASSERT(playlists_.contains(id));

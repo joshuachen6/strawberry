@@ -129,6 +129,7 @@
 #include "fileview/fileview.h"
 #include "osd/osdbase.h"
 #include "context/contextview.h"
+#include "galaxymap/galaxymapview.h"
 #include "collection/collectionlibrary.h"
 #include "collection/collectionbackend.h"
 #include "collection/collectiondirectorymodel.h"
@@ -317,6 +318,7 @@ MainWindow::MainWindow(Application *app,
 #endif
       context_view_(new ContextView(this)),
       collection_view_(new CollectionViewContainer(this)),
+      galaxymap_view_(new GalaxyMapView(app, this)),
       file_view_(new FileView(this)),
       device_view_(new DeviceViewContainer(this)),
       playlist_list_(new PlaylistListContainer(this)),
@@ -437,6 +439,7 @@ MainWindow::MainWindow(Application *app,
   // Add tabs to the fancy tab widget
   ui_->tabs->AddTab(context_view_, u"context"_s, IconLoader::Load(u"strawberry"_s, true, 0, 32), tr("Context"));
   ui_->tabs->AddTab(collection_view_, u"collection"_s, IconLoader::Load(u"library-music"_s, true, 0, 32), tr("Collection"));
+  ui_->tabs->AddTab(galaxymap_view_, u"galaxymap"_s, IconLoader::Load(u"weather-clear-night"_s, true, 0, 32), tr("Galaxy Map"));
   ui_->tabs->AddTab(queue_view_, u"queue"_s, IconLoader::Load(u"footsteps"_s, true, 0, 32), tr("Queue"));
   ui_->tabs->AddTab(playlist_list_, u"playlists"_s, IconLoader::Load(u"view-media-playlist"_s, true, 0, 32), tr("Playlists"));
   ui_->tabs->AddTab(smartplaylists_view_, u"smartplaylists"_s, IconLoader::Load(u"view-media-playlist"_s, true, 0, 32), tr("Smart playlists"));
@@ -703,6 +706,8 @@ MainWindow::MainWindow(Application *app,
   collection_view_->view()->Init(app->task_manager(), app->tagreader_client(), app->network(), app->albumcover_loader(), app->current_albumcover_loader(), app->cover_providers(), app->lyrics_providers(), app->collection(), app->device_manager(), app->streaming_services());
   device_view_->view()->Init(app->task_manager(), app->tagreader_client(), app->device_manager(), app->collection_model()->directory_model());
   playlist_list_->Init(app_->task_manager(), app->tagreader_client(), app_->playlist_manager(), app_->playlist_backend(), app_->device_manager());
+
+  galaxymap_view_->Init();
 
   organize_dialog_->SetDestinationModel(app_->collection()->model()->directory_model());
 

@@ -58,6 +58,7 @@
 #include <QTimeLine>
 #include <QEasingCurve>
 #include <QMetaObject>
+#include <QDateTime>
 #include <QUuid>
 #include <QVersionNumber>
 
@@ -159,6 +160,8 @@ GstEnginePipeline::GstEnginePipeline(QObject *parent)
       pipeline_connected_(false),
       pipeline_active_(false),
       buffering_(false),
+      is_seeking_(false),
+      seek_start_time_ms_(0),
       pending_state_(GST_STATE_NULL),
       pending_seek_nanosec_(-1),
       pending_seek_ready_previous_state_(GST_STATE_NULL),
@@ -1778,11 +1781,11 @@ void GstEnginePipeline::StateChangedMessageReceived(GstMessage *msg) {
     return;
   }
 
-  if (pipeline_active_.value() && !buffering_.value() && !next_uri_need_reset_.value()) {
+  if (pipeline_active_.value() && !next_uri_need_reset_.value()) {
     if (pending_seek_nanosec_.value() != -1) {
       ProcessPendingSeek(new_state);
     }
-    else if (pending_state_.value() != GST_STATE_NULL) {
+    else if (!buffering_.value() && pending_state_.value() != GST_STATE_NULL) {
       SetStateAsync(pending_state_.value());
       pending_state_ = GST_STATE_NULL;
     }
@@ -1872,8 +1875,22 @@ qint64 GstEnginePipeline::position() const {
   if (pipeline_active_.value()) {
     gint64 current_position = 0;
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &current_position)) {
+      if (is_seeking_.value()) {
+        const qint64 diff = std::abs(current_position - last_known_position_ns_);
+        const qint64 elapsed_ms = QDateTime::currentMSecsSinceEpoch() - seek_start_time_ms_.value();
+        // If we are close to the target, or 5 seconds have passed, we stop overriding the position.
+        if (diff < 1LL * kNsecPerSec || elapsed_ms > 5000) {
+          is_seeking_.operator=(false);
+        } else {
+          return last_known_position_ns_;
+        }
+      }
       last_known_position_ns_ = current_position;
     }
+  }
+
+  if (is_seeking_.value() || buffering_.value()) {
+    return last_known_position_ns_;
   }
 
   return last_known_position_ns_;
@@ -1991,12 +2008,18 @@ bool GstEnginePipeline::Seek(const qint64 nanosec) {
       pending_seek_ready_previous_state_ = state();
       SetState(GST_STATE_READY);
     }
+    is_seeking_ = true;
+    last_known_position_ns_ = nanosec;
+    seek_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
     return true;
   }
 
   if (!pipeline_connected_.value() || !pipeline_active_.value()) {
-    qLog(Debug) << "Seek to" << nanosec << "requested, but pipeline is not active, adding to pending seek.";
+    qLog(Debug) << "Seek to" << nanosec << "requested, but pipeline is not active (connected=" << pipeline_connected_.value() << ", active=" << pipeline_active_.value() << "), state=" << GstStateText(state()) << ", adding to pending seek.";
     pending_seek_nanosec_ = nanosec;
+    is_seeking_ = true;
+    last_known_position_ns_ = nanosec;
+    seek_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
     return true;
   }
 
@@ -2009,6 +2032,8 @@ bool GstEnginePipeline::Seek(const qint64 nanosec) {
 
   if (success) {
     qLog(Debug) << "Seek succeeded";
+    is_seeking_ = true;
+    seek_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
     if (pending_state_.value() != GST_STATE_NULL) {
       qLog(Debug) << "Setting state from pending state" << GstStateText(pending_state_.value());
       SetState(pending_state_.value());

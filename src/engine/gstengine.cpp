@@ -26,8 +26,6 @@
 #include <algorithm>
 #include <optional>
 #include <utility>
-#include <memory>
-
 #include <glib.h>
 #include <glib-object.h>
 
@@ -409,7 +407,7 @@ void GstEngine::Seek(const quint64 offset_nanosec) {
 
   if (!seek_timer_->isActive()) {
     SeekNow();
-    seek_timer_->start();  // Stop us from seeking again for a little while
+    seek_timer_->start(kSeekDelayNanosec / kNsecPerMsec);  // Stop us from seeking again for a little while
   }
 
 }
@@ -421,6 +419,8 @@ void GstEngine::SetVolumeSW(const uint volume) {
 qint64 GstEngine::position_nanosec() const {
 
   if (!current_pipeline_) return 0;
+
+  if (waiting_to_seek_) return seek_pos_ - beginning_offset_nanosec_;
 
   const qint64 result = current_pipeline_->position() - static_cast<qint64>(beginning_offset_nanosec_);
   return std::max(0LL, result);
@@ -734,10 +734,21 @@ void GstEngine::SeekNow() {
   if (!waiting_to_seek_) return;
   waiting_to_seek_ = false;
 
-  if (!current_pipeline_) return;
+  if (!current_pipeline_) {
+    qLog(Debug) << "SeekNow called but no current pipeline";
+    return;
+  }
 
+  qLog(Debug) << "Calling pipeline->Seek(" << seek_pos_ << ")";
   if (!current_pipeline_->Seek(static_cast<qint64>(seek_pos_))) {
     qLog(Warning) << "Seek failed";
+    // If the pipeline is still starting up, seeking might fail temporarily.
+    // Retry shortly if we are still at the very beginning of the track.
+    if (position_nanosec() < 5 * kNsecPerSec) {
+      qLog(Warning) << "Retrying seek shortly since track just started";
+      waiting_to_seek_ = true;
+      seek_timer_->start(250); // Retry after 250ms
+    }
   }
 
 }

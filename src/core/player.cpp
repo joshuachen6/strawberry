@@ -19,8 +19,6 @@
  *
  */
 
-#include "config.h"
-
 #include "player.h"
 
 #include <algorithm>
@@ -41,7 +39,6 @@
 #include "constants/playlistsettings.h"
 #include "constants/timeconstants.h"
 
-#include "includes/scoped_ptr.h"
 #include "includes/shared_ptr.h"
 #include "core/logging.h"
 #include "core/settings.h"
@@ -788,7 +785,10 @@ void Player::CurrentMetadataChanged(const Song &metadata) {
 
 void Player::SeekTo(const quint64 seconds) {
 
-  const qint64 length_nanosec = engine_->length_nanosec();
+  qint64 length_nanosec = engine_->length_nanosec();
+  if (length_nanosec <= 0 && current_item_ && current_item_->EffectiveMetadata().length_nanosec() > 0) {
+    length_nanosec = current_item_->EffectiveMetadata().length_nanosec();
+  }
 
   // If the length is 0 then either there is no song playing, or the song isn't seekable.
   if (length_nanosec <= 0) {

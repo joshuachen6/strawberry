@@ -326,6 +326,8 @@ class GstEnginePipeline : public QObject {
   mutex_protected<bool> pipeline_active_;
   mutex_protected<bool> buffering_;
 
+  mutable mutex_protected<bool> is_seeking_;
+  mutable mutex_protected<qint64> seek_start_time_ms_;
   mutex_protected<GstState> pending_state_;
   mutex_protected<qint64> pending_seek_nanosec_;
   mutex_protected<GstState> pending_seek_ready_previous_state_;

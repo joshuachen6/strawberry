@@ -25,6 +25,7 @@
 #include <QColor>
 #include <QSet>
 #include <QDebug>
+#include <QSettings>
 
 #include "core/application.h"
 #include "collection/collectionmodel.h"
@@ -47,59 +48,63 @@
 static float getAubioBPM(const QUrl& url) {
     if (!url.isLocalFile()) return 120.0f;
     QString path = url.toLocalFile();
-    
+
     // Quick in-memory cache to avoid recalculating every time we rebuild map
     static QHash<QString, float> s_bpmCache;
     if (s_bpmCache.contains(path)) return s_bpmCache.value(path);
 
-    uint_t samplerate = 0; 
+    uint_t samplerate = 0;
     uint_t hop_size = 256;
-    
+
     QByteArray pathBa = path.toUtf8();
-    aubio_source_t * source = new_aubio_source(pathBa.constData(), samplerate, hop_size);
+    aubio_source_t *source = new_aubio_source(pathBa.constData(), samplerate, hop_size);
     if (!source) {
         s_bpmCache.insert(path, 120.0f);
         return 120.0f;
     }
-    
+
     samplerate = aubio_source_get_samplerate(source);
     if (samplerate == 0) samplerate = 44100;
-    
-    aubio_tempo_t * tempo = new_aubio_tempo("default", 1024, hop_size, samplerate);
+
+    aubio_tempo_t *tempo = new_aubio_tempo("default", 1024, hop_size, samplerate);
     if (!tempo) {
         del_aubio_source(source);
         s_bpmCache.insert(path, 120.0f);
         return 120.0f;
     }
-    
-    fvec_t * in = new_fvec(hop_size);
-    fvec_t * out = new_fvec(2);
-    
-    // Seek to 30s to avoid intro and get to the beat
-    aubio_source_seek(source, samplerate * 30);
-    
-    uint_t read = 0;
-    // Read up to 20 seconds of audio to get a reading
-    uint_t max_blocks = (20 * samplerate) / hop_size;
-    uint_t blocks = 0;
-    
-    do {
-        aubio_source_do(source, in, &read);
-        aubio_tempo_do(tempo, in, out);
-        blocks++;
-    } while (read == hop_size && blocks < max_blocks);
-    
-    float bpm = aubio_tempo_get_bpm(tempo);
-    
+
+    fvec_t *in  = new_fvec(hop_size);
+    fvec_t *out = new_fvec(2);
+
+    // Start at 20s then scan forward in 10s batches until we hit confidence >= 0.3
+    // This handles long intros and classical structures without a hard cutoff
+    const float kMinConfidence = 0.3f;
+    const uint_t kBatchBlocks  = (10 * samplerate) / hop_size; // 10 s per batch
+    const uint_t kMaxBatches   = 12;                            // up to 140 s total
+    uint_t start_samples = samplerate * 20;                     // skip first 20 s
+
+    float bpm = 0.0f;
+    for (uint_t batch = 0; batch < kMaxBatches; ++batch) {
+        aubio_source_seek(source, start_samples + batch * kBatchBlocks * hop_size);
+        uint_t read = 0;
+        for (uint_t b = 0; b < kBatchBlocks; ++b) {
+            aubio_source_do(source, in, &read);
+            aubio_tempo_do(tempo, in, out);
+            if (read < hop_size) goto done; // EOF
+        }
+        bpm = aubio_tempo_get_bpm(tempo);
+        if (aubio_tempo_get_confidence(tempo) >= kMinConfidence && bpm > 0.0f)
+            break; // good enough reading found
+    }
+done:
+    bpm = aubio_tempo_get_bpm(tempo);
+
     del_aubio_tempo(tempo);
     del_aubio_source(source);
     del_fvec(in);
     del_fvec(out);
-    
-    if (bpm <= 0.0f || std::isinf(bpm) || std::isnan(bpm)) {
-        bpm = 120.0f;
-    }
-    
+
+    if (bpm <= 0.0f || std::isinf(bpm) || std::isnan(bpm)) bpm = 120.0f;
     s_bpmCache.insert(path, bpm);
     return bpm;
 }
@@ -250,239 +255,276 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   album_art_thumb_cache_.clear();
   album_art_loading_.clear();
   loader_id_to_album_key_.clear();
+  update();
 
-  QRandomGenerator rng(0xDEADBEEF);
-  
-  QVector<QVector2D> base_positions;
-  base_positions.reserve(songs.size());
-  
-  QVector<float> all_x;
-  QVector<float> all_y;
-  all_x.reserve(songs.size());
-  all_y.reserve(songs.size());
-
-  // Pass 1: Compute raw metrics
-  for (int i = 0; i < songs.size(); ++i) {
-    const Song &song = songs[i];
-    if (!song.is_valid() || song.unavailable()) {
-      base_positions.append(QVector2D(0, 0));
-      continue;
+  // Version sentinel — clear stale cache if math changed
+  const int kVibeVersion = 3;
+  {
+    QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+    if (vc.value(u"__version"_s).toInt() != kVibeVersion) {
+      vc.clear();
+      vc.setValue(u"__version"_s, kVibeVersion);
     }
-
-    float x = 0.0f;
-    float mood_y = 0.0f;
-    bool has_acoustics = false;
-
-#ifdef HAVE_MOODBAR
-    if (app_->moodbar_loader()) {
-      MoodbarLoader::LoadResult res = app_->moodbar_loader()->Load(song.url(), song.has_cue());
-      if (res.status == MoodbarLoader::LoadStatus::Loaded && !res.data.isEmpty()) {
-        const QByteArray &data = res.data;
-        int n = data.size() / 3;
-        if (n > 0) {
-          double rSum = 0, gSum = 0, bSum = 0;
-          for (int j = 0; j < n; ++j) {
-            rSum += static_cast<unsigned char>(data[j * 3]);
-            gSum += static_cast<unsigned char>(data[j * 3 + 1]);
-            bSum += static_cast<unsigned char>(data[j * 3 + 2]);
-          }
-          // Average the sums
-          rSum /= n; gSum /= n; bSum /= n;
-          
-          // Higher overall brightness means higher energy
-          double energy = rSum + gSum + bSum;
-          
-          // Calculate a "pseudo spectral centroid".
-          // If R=low, G=mid, B=high (roughly), centroid is weighted sum:
-          double centroid = (1.0 * rSum + 2.0 * gSum + 3.0 * bSum) / (energy + 0.1);
-          
-          // Calculate "flatness" or "richness" based on variance
-          double vari_r = 0, vari_g = 0, vari_b = 0;
-          for (int j = 0; j < n; ++j) {
-            vari_r += std::pow((static_cast<unsigned char>(data[j * 3]) - rSum), 2);
-            vari_g += std::pow((static_cast<unsigned char>(data[j * 3 + 1]) - gSum), 2);
-            vari_b += std::pow((static_cast<unsigned char>(data[j * 3 + 2]) - bSum), 2);
-          }
-          vari_r /= n; vari_g /= n; vari_b /= n;
-          
-          double variance = vari_r + vari_g + vari_b;
-          double flatness = variance / (energy + 1.0); // Rough approximation of tonality vs noise
-          
-          // Combine BPM (if available) with Energy to determine Radius
-          float bpm = song.bpm() > 0 ? song.bpm() : getAubioBPM(song.url());
-          float base_radius = (energy * 1.5f) + (bpm * 1.5f);
-          
-          // Angle determined by musical tone (Centroid + Flatness)
-          float theta = (centroid * 15.0f) + (flatness * 0.005f);
-          
-          x = base_radius * 4.0f * std::cos(theta);
-          mood_y = base_radius * 4.0f * std::sin(theta);
-          
-          if (std::isnan(x) || std::isinf(x)) x = 0.0f;
-          if (std::isnan(mood_y) || std::isinf(mood_y)) mood_y = 0.0f;
-          
-          has_acoustics = true;
-        }
-      }
-    }
-#endif
-
-    if (!has_acoustics) {
-      float length_sec = static_cast<float>(song.length_nanosec()) / 1e9f;
-      float bpm = song.bpm() > 0 ? song.bpm() : getAubioBPM(song.url());
-      float r = bpm * 4.0f + length_sec * 0.5f;
-      float theta = ((length_sec / 360.0f) * M_PI * 2.0f) + (bpm * 0.01f);
-      x = r * std::cos(theta);
-      mood_y = r * std::sin(theta);
-    }
-
-    base_positions.append(QVector2D(x, mood_y));
   }
 
-  // Pass 2: Calculate medians for centering
-  for (int i = 0; i < songs.size(); ++i) {
-    if (!songs[i].is_valid() || songs[i].unavailable()) continue;
-    all_x.append(base_positions[i].x());
-    all_y.append(base_positions[i].y());
-  }
+  // ── PHASE 0 (main thread): read MoodbarLoader and QSettings ─────────────────
+  // MoodbarLoader is a QObject — must stay on main thread.
+  // We collect plain byte arrays + booleans; no Qt objects leave this scope.
 
-  float med_x = 0.0f;
-  float med_y = 0.0f;
-  if (!all_x.isEmpty()) {
-    std::sort(all_x.begin(), all_x.end());
-    std::sort(all_y.begin(), all_y.end());
-    med_x = all_x[all_x.size() / 2];
-    med_y = all_y[all_y.size() / 2];
-  }
-
-  // Pass 3: Construct stars with medians and generous jitter
-  for (int i = 0; i < songs.size(); ++i) {
-    const Song &song = songs[i];
-    if (!song.is_valid() || song.unavailable()) continue;
-
-    uint h = qHash(song.url().toEncoded());
-    auto jitter = [&](uint seed, float range) {
-      return (static_cast<float>(qHash(h ^ seed) % 10000) / 10000.0f - 0.5f) * range;
-    };
-
-    float x = base_positions[i].x() - med_x + jitter(0x1234, 150.0f);
-    float y = base_positions[i].y() - med_y + jitter(0x5678, 150.0f);
-
-    float hue = static_cast<float>(qHash(song.effective_albumartist().toLower()) % 360) / 360.0f;
-    float sat = std::clamp(0.6f + std::min(1.0f, std::max(0.0f, song.rating())) * 0.2f, 0.0f, 1.0f);
-    QColor col = QColor::fromHsvF(static_cast<double>(hue), static_cast<double>(sat), 1.0);
-    if (!col.isValid()) col = QColor(100, 150, 255);
-
-    float bpm = song.bpm();
-    if (bpm <= 0.0f) {
-      QString group_key = song.album().isEmpty() ? song.effective_albumartist() : song.album();
-      bpm = static_cast<float>(qHash(group_key.toLower()) % 120) + 60.0f;
-    }
-
-    GalaxyStar star;
-    star.position      = QVector2D(x, y);
-    star.color         = QVector3D(col.redF(), col.greenF(), col.blueF());
-    star.base_size     = 3.0f + std::min(1.0f, std::max(0.0f, song.rating())) * 2.0f;
-    star.twinkle_phase = static_cast<float>(rng.generateDouble() * 2.0 * M_PI);
-    star.title         = song.title();
-    star.artist        = song.artist();
-    star.album         = song.album();
-    star.album_artist  = song.effective_albumartist();
-    star.bpm           = bpm;
-    star.song_id       = song.id();
-    star.all_songs_index = i;
-
-    star.album_key = song.AlbumKey();
-    if (star.album_key.isEmpty()) star.album_key = song.artist() + u"|" + song.album();
-
-    if (!song.art_manual().isEmpty())         star.art_url = song.art_manual();
-    else if (!song.art_automatic().isEmpty()) star.art_url = song.art_automatic();
-
-    star.url = song.url();
-
-    stars_.append(star);
-  }
-
-  // Pass 4: Build stable constellations (clustering by distance for each artist)
-  constellations_.clear();
-  QHash<QString, QVector<int>> artist_groups;
-  for (int i = 0; i < stars_.size(); ++i) {
-    QString artistKey = stars_[i].album_artist;
-    if (artistKey.isEmpty()) artistKey = stars_[i].artist;
-    if (artistKey.isEmpty()) artistKey = u"Unknown"_s;
-    artist_groups[artistKey].append(i);
-  }
-
-  float maxDistWorld = 850.0f; // Increased to 850.0f so jitter doesn't disconnect related stars
-
-  struct Edge {
-    int i, j;
-    float distSq;
-    bool operator<(const Edge& o) const { return distSq < o.distSq; }
+  struct RawEntry {
+    QByteArray mood_data;  // empty = no moodbar available yet
+    bool       from_cache; // true = position already in QSettings
+    float      cached_x, cached_y;
+    float      cached_r, cached_g, cached_b;
+    bool       will_async; // true = pipeline already running
+    MoodbarPipelinePtr pipeline;
   };
 
-  for (auto it = artist_groups.begin(); it != artist_groups.end(); ++it) {
-    const QVector<int>& indices = it.value();
-    
-    QVector<Edge> candidate_edges;
-    for (int i = 0; i < indices.size(); ++i) {
-      for (int j = i + 1; j < indices.size(); ++j) {
-        float distSq = (stars_[indices[i]].position - stars_[indices[j]].position).lengthSquared();
-        if (distSq < maxDistWorld * maxDistWorld) {
-          candidate_edges.append({i, j, distSq});
+  QVector<RawEntry> raw;
+  raw.reserve(songs.size());
+
+  QVector<uint>  jitter_seeds;
+  jitter_seeds.reserve(songs.size());
+
+  {
+    QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+
+    for (int i = 0; i < songs.size(); ++i) {
+      const Song &song = songs[i];
+      jitter_seeds.append(qHash(song.url().toEncoded()));
+
+      RawEntry e{};
+      if (!song.is_valid() || song.unavailable()) { raw.append(e); continue; }
+
+      QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
+      if (vibe_cache.value(hk + u"_acoustic"_s).toBool()) {
+        e.from_cache = true;
+        e.cached_x = vibe_cache.value(hk + u"_X"_s).toFloat();
+        e.cached_y = vibe_cache.value(hk + u"_Y"_s).toFloat();
+        e.cached_r = vibe_cache.value(hk + u"_R"_s).toFloat();
+        e.cached_g = vibe_cache.value(hk + u"_G"_s).toFloat();
+        e.cached_b = vibe_cache.value(hk + u"_B"_s).toFloat();
+        raw.append(e); continue;
+      }
+
+#ifdef HAVE_MOODBAR
+      if (app_->moodbar_loader()) {
+        MoodbarLoader::LoadResult res = app_->moodbar_loader()->Load(song.url(), song.has_cue());
+        if (res.status == MoodbarLoader::LoadStatus::Loaded && !res.data.isEmpty()) {
+          e.mood_data = res.data;
+        } else if (res.status == MoodbarLoader::LoadStatus::WillLoadAsync && res.pipeline) {
+          e.will_async = true;
+          e.pipeline = res.pipeline;
         }
       }
-    }
-    std::sort(candidate_edges.begin(), candidate_edges.end());
-    
-    QVector<int> parent(indices.size());
-    for (int i = 0; i < indices.size(); ++i) parent[i] = i;
-    
-    auto find = [&](int i) {
-      int root = i;
-      while (root != parent[root]) root = parent[root];
-      int curr = i;
-      while (curr != root) { int nxt = parent[curr]; parent[curr] = root; curr = nxt; }
-      return root;
-    };
-
-    QVector<QPair<int, int>> mst_edges;
-    for (const Edge& e : candidate_edges) {
-      int rootI = find(e.i);
-      int rootJ = find(e.j);
-      if (rootI != rootJ) {
-        parent[rootI] = rootJ;
-        mst_edges.append(qMakePair(indices[e.i], indices[e.j]));
-      }
-    }
-
-    QHash<int, QVector<int>> sub_clusters;
-    for (int i = 0; i < indices.size(); ++i) {
-      sub_clusters[find(i)].append(indices[i]);
-    }
-
-    // Determine the "True Name" of the artist for the label. If they vary inside the group, we just take the first one or it.key().
-    // We already use the key, but the key might be lowercased or something? No, it's just the exact string.
-    QString lbl = it.key();
-
-    for (auto sub_it = sub_clusters.begin(); sub_it != sub_clusters.end(); ++sub_it) {
-      const QVector<int>& cluster = sub_it.value();
-      QVector2D centroid(0, 0);
-      for (int idx : cluster) centroid += stars_[idx].position;
-      centroid /= cluster.size();
-      
-      QVector<QPair<int, int>> cluster_edges;
-      for (const auto& edge : mst_edges) {
-        if (cluster.contains(edge.first)) {
-           cluster_edges.append(edge);
-        }
-      }
-      
-      constellations_.append({cluster, cluster_edges, centroid, lbl});
+#endif
+      raw.append(e);
     }
   }
 
-  update();
+  // Set up async pipeline callbacks on main thread (they update stars_ later)
+  for (int i = 0; i < raw.size(); ++i) {
+    if (!raw[i].will_async || !raw[i].pipeline) continue;
+    const Song &song = songs[i];
+    MoodbarPipelinePtr pp = raw[i].pipeline;
+    QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
+    connect(pp.get(), &MoodbarPipeline::Finished, this, [this, i, hk, pp](bool success) {
+      if (!success || i >= stars_.size()) return;
+      const QByteArray &data = pp->data();
+      int n = data.size() / 3;
+      if (n <= 0) return;
+      double rSum = 0, gSum = 0, bSum = 0;
+      for (int j = 0; j < n; ++j) {
+        rSum += static_cast<unsigned char>(data[j*3]);
+        gSum += static_cast<unsigned char>(data[j*3+1]);
+        bSum += static_cast<unsigned char>(data[j*3+2]);
+      }
+      rSum /= n; gSum /= n; bSum /= n;
+      int bc = 0; double gd = 0;
+      for (int j = 0; j < n; ++j) {
+        double r = static_cast<unsigned char>(data[j*3]);
+        double g = static_cast<unsigned char>(data[j*3+1]);
+        double b = static_cast<unsigned char>(data[j*3+2]);
+        if (b > r) ++bc;
+        gd += std::abs(g - gSum);
+      }
+      float ax = static_cast<float>((static_cast<double>(bc)/n - 0.5) * 1500.0);
+      float ay = static_cast<float>((gd/n/127.5 - 0.3) * 2000.0);
+      if (std::isnan(ax)||std::isinf(ax)) ax = 0;
+      if (std::isnan(ay)||std::isinf(ay)) ay = 0;
+      QVector3D ac(rSum/255.0f, gSum/255.0f, bSum/255.0f);
+      QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+      vc.setValue(hk+u"_X"_s, ax); vc.setValue(hk+u"_Y"_s, ay);
+      vc.setValue(hk+u"_R"_s, ac.x()); vc.setValue(hk+u"_G"_s, ac.y()); vc.setValue(hk+u"_B"_s, ac.z());
+      vc.setValue(hk+u"_acoustic"_s, true);
+      stars_[i].position = QVector2D(ax, ay);
+      QColor tc; tc.setRgbF(ac.x(), ac.y(), ac.z());
+      if (!tc.isValid()) tc = QColor(100,150,255);
+      stars_[i].color = QVector3D(tc.redF(), tc.greenF(), tc.blueF());
+      update();
+    });
+  }
+
+  // ── PHASE 1 (background): coordinate math only — NO aubio here ──────────────
+  auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds]() {
+
+    struct SongEntry { QVector2D pos; QVector3D col; float bpm; };
+    QVector<SongEntry> entries;
+    entries.reserve(songs.size());
+    QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+    QRandomGenerator bg_rng(0xDEADBEEF);
+
+    for (int i = 0; i < songs.size(); ++i) {
+      const Song &song = songs[i];
+      const RawEntry &re = raw[i];
+
+      if (!song.is_valid() || song.unavailable()) {
+        entries.append({QVector2D(0,0), QVector3D(0.5f,0.5f,0.5f), 120.0f});
+        continue;
+      }
+
+      // Use metadata BPM now — aubio refinement happens per-star after map is built
+      float bpm = song.bpm() > 0.0f ? song.bpm() : 120.0f;
+      QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
+
+      if (re.from_cache) {
+        entries.append({QVector2D(re.cached_x, re.cached_y),
+                        QVector3D(re.cached_r, re.cached_g, re.cached_b), bpm});
+        continue;
+      }
+
+      float x = 0, mood_y = 0;
+      QVector3D col(0.5f,0.5f,0.5f);
+      bool has_acoustics = false;
+
+      if (!re.mood_data.isEmpty()) {
+        const QByteArray &data = re.mood_data;
+        int n = data.size() / 3;
+        if (n > 0) {
+          double rSum=0, gSum=0, bSum=0;
+          for (int j=0; j<n; ++j) {
+            rSum += static_cast<unsigned char>(data[j*3]);
+            gSum += static_cast<unsigned char>(data[j*3+1]);
+            bSum += static_cast<unsigned char>(data[j*3+2]);
+          }
+          rSum/=n; gSum/=n; bSum/=n;
+          int bc=0; double gd=0;
+          for (int j=0; j<n; ++j) {
+            double r=static_cast<unsigned char>(data[j*3]);
+            double g=static_cast<unsigned char>(data[j*3+1]);
+            double b=static_cast<unsigned char>(data[j*3+2]);
+            if (b>r) ++bc;
+            gd += std::abs(g-gSum);
+          }
+          double bp = static_cast<double>(bc)/n;
+          x      = static_cast<float>((bp - 0.5) * 1500.0);
+          mood_y = static_cast<float>((gd/n/127.5 - 0.3) * 2000.0f);
+          col    = QVector3D(rSum/255.0f, gSum/255.0f, bSum/255.0f);
+          if (std::isnan(x)||std::isinf(x)) x=0;
+          if (std::isnan(mood_y)||std::isinf(mood_y)) mood_y=0;
+          has_acoustics = true;
+          vibe_cache.setValue(hk+u"_X"_s, x);
+          vibe_cache.setValue(hk+u"_Y"_s, mood_y);
+          vibe_cache.setValue(hk+u"_R"_s, col.x());
+          vibe_cache.setValue(hk+u"_G"_s, col.y());
+          vibe_cache.setValue(hk+u"_B"_s, col.z());
+          vibe_cache.setValue(hk+u"_acoustic"_s, true);
+        }
+      }
+
+      if (!has_acoustics) {
+        x      = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
+        mood_y = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
+        float pb = std::clamp((bpm-60.0f)/120.0f, 0.0f, 1.0f);
+        col = QVector3D((1-pb)*0.8f+0.2f, 0.4f, pb*0.8f+0.2f);
+      }
+      entries.append({QVector2D(x, mood_y), col, bpm});
+    }
+
+    // ── PHASE 2 (main thread): build star objects immediately ─────────────────
+    QMetaObject::invokeMethod(this, [this, songs, entries, jitter_seeds]() {
+      QRandomGenerator rng(0xDEADBEEF);
+
+      QVector<float> all_x, all_y;
+      all_x.reserve(songs.size()); all_y.reserve(songs.size());
+      for (int i = 0; i < songs.size(); ++i) {
+        if (!songs[i].is_valid() || songs[i].unavailable()) continue;
+        all_x.append(entries[i].pos.x());
+        all_y.append(entries[i].pos.y());
+      }
+      float med_x=0, med_y=0;
+      if (!all_x.isEmpty()) {
+        std::sort(all_x.begin(), all_x.end());
+        std::sort(all_y.begin(), all_y.end());
+        med_x = all_x[all_x.size()/2];
+        med_y = all_y[all_y.size()/2];
+      }
+
+      for (int i = 0; i < songs.size(); ++i) {
+        const Song &song = songs[i];
+        if (!song.is_valid() || song.unavailable()) continue;
+        float bpm = entries[i].bpm;
+        if (bpm <= 0) bpm = 120.0f;
+        float bx = entries[i].pos.x() - med_x;
+        float by = entries[i].pos.y() - med_y;
+        uint hs = jitter_seeds[i];
+        auto jitter = [&](uint seed) {
+          return (static_cast<float>(qHash(hs^seed)%10000)/10000.0f-0.5f)*40.0f;
+        };
+        float x = bx + jitter(0x1234);
+        float y = by + jitter(0x5678) + (bpm-120.0f)*2.0f;
+
+        QColor col;
+        col.setRgbF(entries[i].col.x(), entries[i].col.y(), entries[i].col.z());
+        if (!col.isValid()) col = QColor(100,150,255);
+
+        GalaxyStar star;
+        star.position      = QVector2D(x,y);
+        star.color         = QVector3D(col.redF(), col.greenF(), col.blueF());
+        star.base_size     = 3.0f + std::min(1.0f, std::max(0.0f, song.rating()))*2.0f;
+        star.twinkle_phase = static_cast<float>(rng.generateDouble()*2.0*M_PI);
+        star.title         = song.title();
+        star.artist        = song.artist();
+        star.album         = song.album();
+        star.album_artist  = song.effective_albumartist();
+        star.bpm           = bpm;
+        star.song_id       = song.id();
+        star.all_songs_index = i;
+        star.album_key     = song.AlbumKey();
+        if (star.album_key.isEmpty()) star.album_key = song.artist() + u"|" + song.album();
+        if (!song.art_manual().isEmpty())         star.art_url = song.art_manual();
+        else if (!song.art_automatic().isEmpty()) star.art_url = song.art_automatic();
+        star.url = song.url();
+        stars_.append(star);
+      }
+
+      constellations_.clear();
+      constellations_.append({{},{},QVector2D(-1000,-1000),u"Distorted / Gritty"_s});
+      constellations_.append({{},{},QVector2D(-1000, 1000),u"Acoustic / Warm"_s});
+      constellations_.append({{},{},QVector2D( 1000,-1000),u"Bright / Sharp"_s});
+      constellations_.append({{},{},QVector2D( 1000, 1000),u"Tonal / Pure"_s});
+      update();
+
+      // ── PHASE 3: refine BPM per-star in background (non-blocking) ──────────
+      // Each song gets its own tiny task so results trickle in without waiting.
+      for (int i = 0; i < stars_.size(); ++i) {
+        const QUrl url = stars_[i].url;
+        if (!url.isLocalFile()) continue;
+        QtConcurrent::run([this, i, url]() {
+          float bpm = getAubioBPM(url);
+          if (bpm > 0.0f) {
+            QMetaObject::invokeMethod(this, [this, i, bpm]() {
+              if (i < stars_.size()) {
+                stars_[i].bpm = bpm;
+                update();
+              }
+            }, Qt::QueuedConnection);
+          }
+        });
+      }
+    }, Qt::QueuedConnection);
+  });
+  Q_UNUSED(future_)
 }
 
 // ─── Art Loading ──────────────────────────────────────────────────────────────
@@ -616,6 +658,7 @@ void GalaxyMapView::paintEvent(QPaintEvent *) {
   if (zoom_ < kZoomStarView) {
     drawStarView(p);
   } else if (zoom_ < kZoomConstellation) {
+    drawStarView(p);
     drawConstellationView(p);
   } else {
     drawPlanetView(p);
@@ -662,10 +705,10 @@ void GalaxyMapView::drawParallaxBackground(QPainter &p) {
           float sy = ty * tileSize + ly + offsetY;
           
           if (is_nebula) {
-            float hue = static_cast<float>(rng.generateDouble());
+            float hue = std::clamp(static_cast<float>(rng.generateDouble()), 0.0f, 0.999f);
             int nr = 80 + static_cast<int>(rng.generateDouble() * 200);
             QRadialGradient nebula(QPointF(sx, sy), nr * 2.5f);
-            QColor nc = QColor::fromHsvF(double(hue), 0.7, 0.6, 0.07);
+            QColor nc = QColor::fromHsvF(hue, 0.7f, 0.6f, 0.07f);
             nebula.setColorAt(0.0, nc);
             nebula.setColorAt(1.0, QColor(0, 0, 0, 0));
             p.fillRect(static_cast<int>(sx - nr * 2.5), static_cast<int>(sy - nr * 2.5),
@@ -699,8 +742,11 @@ void GalaxyMapView::drawStarView(QPainter &p) {
       continue;
 
     float twinkle = 0.7f + 0.3f * sinf(anim_time_ * 2.5f + star.twinkle_phase);
-    float r = star.base_size * zoom_ * 120.0f * twinkle;
-    r = std::max(1.5f, std::min(r, 8.0f));
+    // Size: BPM-driven — fast songs are bigger, slow songs are smaller
+    float bpm_factor = std::clamp((star.bpm - 60.0f) / 140.0f, 0.0f, 1.0f); // 0 @ 60bpm, 1 @ 200bpm
+    float bpm_size = 0.6f + bpm_factor * 1.4f; // range 0.6x..2.0x
+    float r = star.base_size * bpm_size * zoom_ * 120.0f * twinkle;
+    r = std::max(1.5f, std::min(r, 10.0f));
 
     QColor sc(static_cast<int>(star.color.x() * 255),
               static_cast<int>(star.color.y() * 255),
@@ -743,103 +789,84 @@ void GalaxyMapView::drawConstellationView(QPainter &p) {
   p.save();
   p.setRenderHint(QPainter::Antialiasing, true);
 
-  for (const GalaxyConstellation &c : constellations_) {
-    QPointF centerSp = worldToScreen(c.centroid);
-    
-    // Quick bounds check: approximate visibility (constellation could be wide)
-    if (centerSp.x() < -2000 || centerSp.x() > width() + 2000 ||
-        centerSp.y() < -2000 || centerSp.y() > height() + 2000)
-      continue;
-      
-    // Map points and check detailed visibility
-    QVector<QPointF> screenPoints;
-    screenPoints.reserve(c.star_indices.size());
-    bool any_visible = false;
-    
-    for (int idx : c.star_indices) {
-      QPointF sp = worldToScreen(stars_[idx].position);
-      screenPoints.append(sp);
-      if (sp.x() >= -80 && sp.x() <= width() + 80 && sp.y() >= -80 && sp.y() <= height() + 80)
-        any_visible = true;
-    }
-    
-    if (!any_visible) continue;
+  // Draw Vibe Zone corner labels — fixed to screen corners, not world-space
+  if (blend > 0.05f) {
+    const int pad = 24;
+    QFont zoneFont(u"Inter"_s, 13, QFont::Light, true);
+    p.setFont(zoneFont);
+    QColor ac(255, 255, 255, static_cast<int>(130 * blend));
+    p.setPen(ac);
 
-    // Draw connecting lines
-    if (blend > 0.1f && c.star_indices.size() > 1) {
-      QColor ac(static_cast<int>(stars_[c.star_indices.first()].color.x() * 255),
-                static_cast<int>(stars_[c.star_indices.first()].color.y() * 255),
-                static_cast<int>(stars_[c.star_indices.first()].color.z() * 255),
-                static_cast<int>(100 * blend));
-      p.setPen(QPen(ac, 1.5, Qt::DashLine));
-      
-      for (const auto& edge : c.edges) {
-        QPointF p1 = worldToScreen(stars_[edge.first].position);
-        QPointF p2 = worldToScreen(stars_[edge.second].position);
-        p.drawLine(p1, p2);
-      }
-    }
+    // Top-left: Distorted / Gritty
+    p.drawText(QRectF(pad, pad, 260, 40), Qt::AlignLeft | Qt::AlignVCenter, u"\u2604 Distorted / Gritty"_s);
+    // Top-right: Bright / Sharp
+    p.drawText(QRectF(width() - 260 - pad, pad, 260, 40), Qt::AlignRight | Qt::AlignVCenter, u"Bright / Sharp \u2600"_s);
+    // Bottom-left: Acoustic / Warm
+    p.drawText(QRectF(pad, height() - pad - 40, 260, 40), Qt::AlignLeft | Qt::AlignVCenter, u"\u266b Acoustic / Warm"_s);
+    // Bottom-right: Tonal / Pure
+    p.drawText(QRectF(width() - 260 - pad, height() - pad - 40, 260, 40), Qt::AlignRight | Qt::AlignVCenter, u"Tonal / Pure \u266a"_s);
+  }
 
-    // Draw stars and hover states
-    for (int i = 0; i < c.star_indices.size(); ++i) {
-      int idx = c.star_indices[i];
-      const GalaxyStar &star = stars_[idx];
-      QPointF sp = screenPoints[i];
-      
-      if (sp.x() < -80 || sp.x() > width() + 80 || sp.y() < -80 || sp.y() > height() + 80)
-        continue;
-        
-      float twinkle = 0.85f + 0.15f * sinf(anim_time_ * 2.5f + star.twinkle_phase);
+  // Draw selected star: album art thumbnail + name pill
+  if (selected_star_ >= 0 && selected_star_ < stars_.size()) {
+    const GalaxyStar &star = stars_[selected_star_];
+    QPointF sp = worldToScreen(star.position);
 
-      float r = star.base_size * std::max(6.0f, zoom_ * 30.0f) * twinkle;
-      r = std::min(r, 12.0f);
-      
-      QColor sc(static_cast<int>(star.color.x() * 255),
-                static_cast<int>(star.color.y() * 255),
-                static_cast<int>(star.color.z() * 255));
-                
-      QRadialGradient core(sp, r);
-      core.setColorAt(0.0, Qt::white);
-      core.setColorAt(0.5, sc);
-      core.setColorAt(1.0, sc.darker(150));
-      
-      p.setPen(Qt::NoPen);
-      p.setBrush(core);
-      p.drawEllipse(sp, r, r);
-
-      if (idx == selected_star_) {
-        float pr = r + 6.0f + select_pulse_ * 15.0f;
-        int alpha = static_cast<int>((1.0f - select_pulse_) * 220.0f);
-        p.setPen(QPen(QColor(255, 220, 100, alpha), 2.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(sp, pr, pr);
+    if (sp.x() >= -100 && sp.x() <= width() + 100 && sp.y() >= -100 && sp.y() <= height() + 100) {
+      // Trigger art load if not cached yet
+      if (!album_art_cache_.contains(star.album_key) && !album_art_loading_.contains(star.album_key)) {
+        loadStarArt(selected_star_);
       }
 
-      if (idx == hovered_star_) {
-        p.setPen(QColor(255, 255, 255, 200));
-        p.setFont(QFont(u"Inter"_s, 9, QFont::Bold));
-        p.drawText(QPointF(sp.x() + r + 8.0, sp.y() + 4.0), star.title);
-        
-        p.setFont(QFont(u"Inter"_s, 8));
-        p.setPen(QColor(200, 200, 200, 160));
-        QString sublbl = star.artist;
-        if (!star.album.isEmpty()) sublbl += u" / " + star.album;
-        p.drawText(QPointF(sp.x() + r + 8.0, sp.y() + 18.0), sublbl);
+      float bpm_factor = std::clamp((star.bpm - 60.0f) / 140.0f, 0.0f, 1.0f);
+      float dot_r = std::max(1.5f, std::min(star.base_size * (0.6f + bpm_factor * 1.4f) * zoom_ * 120.0f, 10.0f));
+
+      QColor star_col(static_cast<int>(star.color.x() * 255),
+                      static_cast<int>(star.color.y() * 255),
+                      static_cast<int>(star.color.z() * 255));
+
+      // Album art thumbnail above the star dot
+      constexpr float artSz = 64.0f;
+      QRectF artRect(sp.x() - artSz / 2.0, sp.y() - dot_r - artSz - 6, artSz, artSz);
+
+      if (album_art_cache_.contains(star.album_key)) {
+        p.save();
+        QPainterPath clip;
+        clip.addRoundedRect(artRect, 8, 8);
+        p.setClipPath(clip);
+        p.drawPixmap(artRect.toRect(), album_art_cache_[star.album_key]);
+        p.restore();
+      } else {
+        p.setBrush(star_col.darker(200));
+        p.setPen(Qt::NoPen);
+        p.drawRoundedRect(artRect, 8, 8);
+        p.setPen(QColor(255, 255, 255, 80));
+        p.setFont(QFont(u"Inter"_s, static_cast<int>(artSz * 0.3)));
+        p.drawText(artRect, Qt::AlignCenter, u"\u266a"_s);
       }
-    }
-    
-    // Draw constellation label
-    if (blend > 0.05f && c.star_indices.size() > 1) {
-      if (centerSp.x() > -200 && centerSp.x() < width() + 200 && centerSp.y() > -100 && centerSp.y() < height() + 100) {
-        QColor ac(static_cast<int>(stars_[c.star_indices.first()].color.x() * 255),
-                  static_cast<int>(stars_[c.star_indices.first()].color.y() * 255),
-                  static_cast<int>(stars_[c.star_indices.first()].color.z() * 255),
-                  static_cast<int>(180 * blend));
-                  
-        p.setPen(ac);
-        p.setFont(QFont(u"Inter"_s, 11, QFont::DemiBold));
-        p.drawText(QRectF(centerSp.x() - 150, centerSp.y() - 30, 300, 60), Qt::AlignCenter, c.label);
-      }
+      p.setPen(QPen(QColor(star_col.red(), star_col.green(), star_col.blue(), 140), 1.5));
+      p.setBrush(Qt::NoBrush);
+      p.drawRoundedRect(artRect, 8, 8);
+
+      // Name + artist pill below the star dot
+      QFont label_font(u"Inter"_s, 9, QFont::Medium);
+      p.setFont(label_font);
+      QFontMetrics fm(label_font);
+      QString lbl = star.title.isEmpty() ? u"?"_s : star.title;
+      QString sub = star.artist;
+      int tw = std::max(fm.horizontalAdvance(lbl), fm.horizontalAdvance(sub)) + 16;
+
+      QRectF pill(sp.x() - tw / 2.0, sp.y() + dot_r + 5, tw, 34);
+      p.setBrush(QColor(5, 5, 20, 210));
+      p.setPen(QPen(QColor(star_col.red(), star_col.green(), star_col.blue(), 120), 1.0));
+      p.drawRoundedRect(pill, 6, 6);
+
+      p.setPen(Qt::white);
+      p.setFont(QFont(u"Inter"_s, 9, QFont::Bold));
+      p.drawText(pill.adjusted(0, 4, 0, 0), Qt::AlignTop | Qt::AlignHCenter, lbl);
+      p.setPen(QColor(180, 180, 210));
+      p.setFont(QFont(u"Inter"_s, 8));
+      p.drawText(pill.adjusted(0, 18, 0, 0), Qt::AlignTop | Qt::AlignHCenter, sub);
     }
   }
 
@@ -854,8 +881,8 @@ void GalaxyMapView::drawPlanetView(QPainter &p) {
     const GalaxyStar &star = stars_[i];
     QPointF sp = worldToScreen(star.position);
 
-    float artSize = zoom_ * 150.0f;
-    artSize = std::max(48.0f, std::min(artSize, 256.0f));
+    float artSize = zoom_ * 45.0f;
+    artSize = std::max(20.0f, std::min(artSize, 64.0f));
     float hs = artSize / 2.0f;
 
     if (sp.x() < -hs - 40 || sp.x() > width() + hs + 40 ||
@@ -958,10 +985,7 @@ void GalaxyMapView::drawPlanetView(QPainter &p) {
       p.drawText(pill.adjusted(0, 22, 0, 0), Qt::AlignTop | Qt::AlignHCenter, lblSub);
       
       if (is_selected) {
-        QString urlStr = star.url.toString();
-        p.setFont(QFont(u"Inter"_s, 7));
-        p.setPen(QColor(150, 150, 180, 150));
-        p.drawText(pill.adjusted(4, 34, -4, 0), Qt::AlignBottom | Qt::AlignHCenter, urlStr);
+        // (URL intentionally omitted — too long)
       }
     }
   }

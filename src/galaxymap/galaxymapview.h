@@ -56,7 +56,7 @@ class GalaxyMapView : public QWidget {
 
   // Zoom thresholds (world-space pixels per unit)
   static constexpr float kZoomStarView      = 0.18f;   // < zoomed out
-  static constexpr float kZoomConstellation = 0.6f;    // mid zoom
+  static constexpr float kZoomConstellation = 3.5f;    // mid zoom
   // above kZoomConstellation => planet view
 
  protected:

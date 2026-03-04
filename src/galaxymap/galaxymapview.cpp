@@ -45,70 +45,66 @@
 #ifdef HAVE_AUBIO
 #include <aubio/aubio.h>
 
-static float getAubioBPM(const QUrl& url) {
-    if (!url.isLocalFile()) return 120.0f;
+struct AubioBPMResult { float bpm; float confidence; };
+
+static AubioBPMResult getAubioBPMData(const QUrl& url) {
+    if (!url.isLocalFile()) return {120.0f, 0.0f};
     QString path = url.toLocalFile();
 
-    // Quick in-memory cache to avoid recalculating every time we rebuild map
-    static QHash<QString, float> s_bpmCache;
+    static QHash<QString, AubioBPMResult> s_bpmCache;
     if (s_bpmCache.contains(path)) return s_bpmCache.value(path);
 
-    uint_t samplerate = 0;
-    uint_t hop_size = 256;
-
+    uint_t samplerate = 0, hop_size = 256;
     QByteArray pathBa = path.toUtf8();
     aubio_source_t *source = new_aubio_source(pathBa.constData(), samplerate, hop_size);
-    if (!source) {
-        s_bpmCache.insert(path, 120.0f);
-        return 120.0f;
-    }
+    if (!source) { s_bpmCache.insert(path, {120.0f, 0.0f}); return {120.0f, 0.0f}; }
 
     samplerate = aubio_source_get_samplerate(source);
     if (samplerate == 0) samplerate = 44100;
 
     aubio_tempo_t *tempo = new_aubio_tempo("default", 1024, hop_size, samplerate);
-    if (!tempo) {
-        del_aubio_source(source);
-        s_bpmCache.insert(path, 120.0f);
-        return 120.0f;
-    }
+    if (!tempo) { del_aubio_source(source); s_bpmCache.insert(path, {120.0f, 0.0f}); return {120.0f, 0.0f}; }
 
     fvec_t *in  = new_fvec(hop_size);
     fvec_t *out = new_fvec(2);
 
-    // Start at 20s then scan forward in 10s batches until we hit confidence >= 0.3
-    // This handles long intros and classical structures without a hard cutoff
-    const float kMinConfidence = 0.3f;
-    const uint_t kBatchBlocks  = (10 * samplerate) / hop_size; // 10 s per batch
-    const uint_t kMaxBatches   = 12;                            // up to 140 s total
-    uint_t start_samples = samplerate * 20;                     // skip first 20 s
+    const float  kMinConfidence = 0.3f;
+    const uint_t kBatchBlocks   = (10 * samplerate) / hop_size;
+    const uint_t kMaxBatches    = 12;
+    uint_t start_samples = samplerate * 20;
 
-    float bpm = 0.0f;
+    float bpm = 0.0f, confidence = 0.0f;
     for (uint_t batch = 0; batch < kMaxBatches; ++batch) {
         aubio_source_seek(source, start_samples + batch * kBatchBlocks * hop_size);
         uint_t read = 0;
         for (uint_t b = 0; b < kBatchBlocks; ++b) {
             aubio_source_do(source, in, &read);
             aubio_tempo_do(tempo, in, out);
-            if (read < hop_size) goto done; // EOF
+            if (read < hop_size) goto done;
         }
-        bpm = aubio_tempo_get_bpm(tempo);
-        if (aubio_tempo_get_confidence(tempo) >= kMinConfidence && bpm > 0.0f)
-            break; // good enough reading found
+        bpm        = aubio_tempo_get_bpm(tempo);
+        confidence = aubio_tempo_get_confidence(tempo);
+        if (confidence >= kMinConfidence && bpm > 0.0f) break;
     }
 done:
-    bpm = aubio_tempo_get_bpm(tempo);
+    bpm        = aubio_tempo_get_bpm(tempo);
+    confidence = aubio_tempo_get_confidence(tempo);
 
     del_aubio_tempo(tempo);
     del_aubio_source(source);
     del_fvec(in);
     del_fvec(out);
 
-    if (bpm <= 0.0f || std::isinf(bpm) || std::isnan(bpm)) bpm = 120.0f;
-    s_bpmCache.insert(path, bpm);
-    return bpm;
+    if (bpm <= 0.0f || std::isinf(bpm) || std::isnan(bpm)) { bpm = 120.0f; confidence = 0.0f; }
+    AubioBPMResult res{bpm, confidence};
+    s_bpmCache.insert(path, res);
+    return res;
 }
+
+[[maybe_unused]] static float getAubioBPM(const QUrl& url) { return getAubioBPMData(url).bpm; }
 #else
+struct AubioBPMResult { float bpm; float confidence; };
+static AubioBPMResult getAubioBPMData(const QUrl&) { return {120.0f, 0.0f}; }
 static float getAubioBPM(const QUrl&) { return 120.0f; }
 #endif
 
@@ -258,7 +254,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   update();
 
   // Version sentinel — clear stale cache if math changed
-  const int kVibeVersion = 3;
+  const int kVibeVersion = 7;
   {
     QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
     if (vc.value(u"__version"_s).toInt() != kVibeVersion) {
@@ -267,161 +263,157 @@ void GalaxyMapView::buildStars(const SongList &songs) {
     }
   }
 
-  // ── PHASE 0 (main thread): read MoodbarLoader and QSettings ─────────────────
-  // MoodbarLoader is a QObject — must stay on main thread.
-  // We collect plain byte arrays + booleans; no Qt objects leave this scope.
-
-  struct RawEntry {
-    QByteArray mood_data;  // empty = no moodbar available yet
-    bool       from_cache; // true = position already in QSettings
-    float      cached_x, cached_y;
-    float      cached_r, cached_g, cached_b;
-    bool       will_async; // true = pipeline already running
-    MoodbarPipelinePtr pipeline;
-  };
-
-  QVector<RawEntry> raw;
-  raw.reserve(songs.size());
-
-  QVector<uint>  jitter_seeds;
+  // ── PHASE 0 (main thread): Pre-read cache ───────────────────────────────────
+  struct CacheEntry { float x, y, r, g, b; };
+  QHash<QString, CacheEntry> cache_map;
+  QVector<uint> jitter_seeds;
   jitter_seeds.reserve(songs.size());
 
   {
-    QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
-
+    QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
     for (int i = 0; i < songs.size(); ++i) {
       const Song &song = songs[i];
       jitter_seeds.append(qHash(song.url().toEncoded()));
-
-      RawEntry e{};
-      if (!song.is_valid() || song.unavailable()) { raw.append(e); continue; }
-
+      
+      if (!song.is_valid() || song.unavailable()) continue;
       QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
-      if (vibe_cache.value(hk + u"_acoustic"_s).toBool()) {
-        e.from_cache = true;
-        e.cached_x = vibe_cache.value(hk + u"_X"_s).toFloat();
-        e.cached_y = vibe_cache.value(hk + u"_Y"_s).toFloat();
-        e.cached_r = vibe_cache.value(hk + u"_R"_s).toFloat();
-        e.cached_g = vibe_cache.value(hk + u"_G"_s).toFloat();
-        e.cached_b = vibe_cache.value(hk + u"_B"_s).toFloat();
-        raw.append(e); continue;
+      if (vc.value(hk + u"_acoustic"_s).toBool()) {
+        cache_map.insert(hk, {
+          vc.value(hk + u"_X"_s).toFloat(),
+          vc.value(hk + u"_Y"_s).toFloat(),
+          vc.value(hk + u"_R"_s).toFloat(),
+          vc.value(hk + u"_G"_s).toFloat(),
+          vc.value(hk + u"_B"_s).toFloat()
+        });
       }
-
-#ifdef HAVE_MOODBAR
-      if (app_->moodbar_loader()) {
-        MoodbarLoader::LoadResult res = app_->moodbar_loader()->Load(song.url(), song.has_cue());
-        if (res.status == MoodbarLoader::LoadStatus::Loaded && !res.data.isEmpty()) {
-          e.mood_data = res.data;
-        } else if (res.status == MoodbarLoader::LoadStatus::WillLoadAsync && res.pipeline) {
-          e.will_async = true;
-          e.pipeline = res.pipeline;
-        }
-      }
-#endif
-      raw.append(e);
     }
   }
 
-  // Set up async pipeline callbacks on main thread (they update stars_ later)
-  for (int i = 0; i < raw.size(); ++i) {
-    if (!raw[i].will_async || !raw[i].pipeline) continue;
-    const Song &song = songs[i];
-    MoodbarPipelinePtr pp = raw[i].pipeline;
-    QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
-    connect(pp.get(), &MoodbarPipeline::Finished, this, [this, i, hk, pp](bool success) {
-      if (!success || i >= stars_.size()) return;
-      const QByteArray &data = pp->data();
+  // ── PHASE 1 (background): Load Moodbars & Math ──────────────────────────────
+  auto future_ = QtConcurrent::run([this, songs, cache_map, jitter_seeds]() {
+    struct SongEntry { QVector2D pos; QVector3D col; float bpm; };
+    QVector<SongEntry> entries;
+    entries.reserve(songs.size());
+    QRandomGenerator bg_rng(0xDEADBEEF);
+    QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+
+    // Reusable math logic for both blocking load and async load
+    auto processMoodMath = [](const QByteArray &data, float &x, float &mood_y, QVector3D &col) {
       int n = data.size() / 3;
-      if (n <= 0) return;
+      if (n <= 0) return false;
+
       double rSum = 0, gSum = 0, bSum = 0;
-      for (int j = 0; j < n; ++j) {
-        rSum += static_cast<unsigned char>(data[j*3]);
-        gSum += static_cast<unsigned char>(data[j*3+1]);
-        bSum += static_cast<unsigned char>(data[j*3+2]);
-      }
-      rSum /= n; gSum /= n; bSum /= n;
-      int bc = 0; double gd = 0;
+      double bSumSq = 0;
+
       for (int j = 0; j < n; ++j) {
         double r = static_cast<unsigned char>(data[j*3]);
         double g = static_cast<unsigned char>(data[j*3+1]);
         double b = static_cast<unsigned char>(data[j*3+2]);
-        if (b > r) ++bc;
-        gd += std::abs(g - gSum);
+        rSum += r; gSum += g; bSum += b;
+        bSumSq += b * b;
       }
-      float ax = static_cast<float>((static_cast<double>(bc)/n - 0.5) * 1500.0);
-      float ay = static_cast<float>((gd/n/127.5 - 0.3) * 2000.0);
-      if (std::isnan(ax)||std::isinf(ax)) ax = 0;
-      if (std::isnan(ay)||std::isinf(ay)) ay = 0;
-      QVector3D ac(rSum/255.0f, gSum/255.0f, bSum/255.0f);
-      QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
-      vc.setValue(hk+u"_X"_s, ax); vc.setValue(hk+u"_Y"_s, ay);
-      vc.setValue(hk+u"_R"_s, ac.x()); vc.setValue(hk+u"_G"_s, ac.y()); vc.setValue(hk+u"_B"_s, ac.z());
-      vc.setValue(hk+u"_acoustic"_s, true);
-      stars_[i].position = QVector2D(ax, ay);
-      QColor tc; tc.setRgbF(ac.x(), ac.y(), ac.z());
-      if (!tc.isValid()) tc = QColor(100,150,255);
-      stars_[i].color = QVector3D(tc.redF(), tc.greenF(), tc.blueF());
-      update();
-    });
-  }
 
-  // ── PHASE 1 (background): coordinate math only — NO aubio here ──────────────
-  auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds]() {
+      double meanR = rSum / n, meanG = gSum / n, meanB = bSum / n;
+      double normR = meanR / 255.0, normG = meanG / 255.0, normB = meanB / 255.0;
 
-    struct SongEntry { QVector2D pos; QVector3D col; float bpm; };
-    QVector<SongEntry> entries;
-    entries.reserve(songs.size());
-    QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
-    QRandomGenerator bg_rng(0xDEADBEEF);
+      // X-axis: Spectral Shape (Spectral Skewness)
+      x = static_cast<float>((normB - normR) * (1.0 + normG) * 500.0);
+
+      // Y-axis: Pulse Entropy (Flux Variance over Mean Energy)
+      double fluxSum = 0.0, fluxSumSq = 0.0;
+      double prevLum = (static_cast<unsigned char>(data[0])*0.2126
+                      + static_cast<unsigned char>(data[1])*0.7152
+                      + static_cast<unsigned char>(data[2])*0.0722);
+      for (int j = 1; j < n; ++j) {
+        double lum = (static_cast<unsigned char>(data[j*3  ])*0.2126
+                    + static_cast<unsigned char>(data[j*3+1])*0.7152
+                    + static_cast<unsigned char>(data[j*3+2])*0.0722);
+        double flux = std::abs(lum - prevLum);
+        fluxSum += flux;
+        fluxSumSq += flux * flux;
+        prevLum = lum;
+      }
+      double avgFlux = fluxSum / (n - 1);
+      double fluxVar = std::max(0.0, (fluxSumSq / (n - 1)) - (avgFlux * avgFlux));
+      double meanEnergy = (meanR + meanG + meanB) / 3.0;
+      mood_y = static_cast<float>(1000.0 * std::log10(1.0 + (fluxVar / (meanEnergy + 1.0))));
+
+      // Frequency Jitter: B-channel variance offset
+      double bVar = std::max(0.0, (bSumSq / n) - (meanB * meanB));
+      float bJitter = static_cast<float>(std::sqrt(bVar) / 255.0 * 60.0 - 30.0);
+      x += bJitter;
+
+      if (std::isnan(x) || std::isinf(x)) x = 0;
+      if (std::isnan(mood_y) || std::isinf(mood_y)) mood_y = 0;
+
+      // Z-axis/Color: Spectral Contrast (Saturation)
+      double meanColor = (normR + normG + normB) / 3.0;
+      double varColor = ((normR - meanColor)*(normR - meanColor) 
+                       + (normG - meanColor)*(normG - meanColor) 
+                       + (normB - meanColor)*(normB - meanColor)) / 3.0;
+      double stdColor = std::sqrt(varColor);
+      double saturation = std::clamp(stdColor * 2.5, 0.0, 1.0);
+
+      QColor tc; tc.setRgbF(normR, normG, normB);
+      if (!tc.isValid()) tc = QColor(100, 150, 255);
+      float h, s, v; tc.getHsvF(&h, &s, &v);
+      s = static_cast<float>(saturation);
+      tc.setHsvF(h, s, v);
+      col = QVector3D(tc.redF(), tc.greenF(), tc.blueF());
+
+      return true;
+    };
 
     for (int i = 0; i < songs.size(); ++i) {
       const Song &song = songs[i];
-      const RawEntry &re = raw[i];
-
       if (!song.is_valid() || song.unavailable()) {
         entries.append({QVector2D(0,0), QVector3D(0.5f,0.5f,0.5f), 120.0f});
         continue;
       }
 
-      // Use metadata BPM now — aubio refinement happens per-star after map is built
       float bpm = song.bpm() > 0.0f ? song.bpm() : 120.0f;
       QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
 
-      if (re.from_cache) {
-        entries.append({QVector2D(re.cached_x, re.cached_y),
-                        QVector3D(re.cached_r, re.cached_g, re.cached_b), bpm});
+      if (cache_map.contains(hk)) {
+        CacheEntry ce = cache_map.value(hk);
+        entries.append({QVector2D(ce.x, ce.y), QVector3D(ce.r, ce.g, ce.b), bpm});
         continue;
       }
 
       float x = 0, mood_y = 0;
       QVector3D col(0.5f,0.5f,0.5f);
       bool has_acoustics = false;
+      QByteArray mood_data;
 
-      if (!re.mood_data.isEmpty()) {
-        const QByteArray &data = re.mood_data;
-        int n = data.size() / 3;
-        if (n > 0) {
-          double rSum=0, gSum=0, bSum=0;
-          for (int j=0; j<n; ++j) {
-            rSum += static_cast<unsigned char>(data[j*3]);
-            gSum += static_cast<unsigned char>(data[j*3+1]);
-            bSum += static_cast<unsigned char>(data[j*3+2]);
-          }
-          rSum/=n; gSum/=n; bSum/=n;
-          int bc=0; double gd=0;
-          for (int j=0; j<n; ++j) {
-            double r=static_cast<unsigned char>(data[j*3]);
-            double g=static_cast<unsigned char>(data[j*3+1]);
-            double b=static_cast<unsigned char>(data[j*3+2]);
-            if (b>r) ++bc;
-            gd += std::abs(g-gSum);
-          }
-          double bp = static_cast<double>(bc)/n;
-          x      = static_cast<float>((bp - 0.5) * 1500.0);
-          mood_y = static_cast<float>((gd/n/127.5 - 0.3) * 2000.0f);
-          col    = QVector3D(rSum/255.0f, gSum/255.0f, bSum/255.0f);
-          if (std::isnan(x)||std::isinf(x)) x=0;
-          if (std::isnan(mood_y)||std::isinf(mood_y)) mood_y=0;
+#ifdef HAVE_MOODBAR
+      if (app_->moodbar_loader()) {
+        MoodbarLoader::LoadResult res = app_->moodbar_loader()->Load(song.url(), song.has_cue());
+        if (res.status == MoodbarLoader::LoadStatus::Loaded && !res.data.isEmpty()) {
+          mood_data = res.data;
+        } else if (res.status == MoodbarLoader::LoadStatus::WillLoadAsync && res.pipeline) {
+          MoodbarPipelinePtr pp = res.pipeline;
+          connect(pp.get(), &MoodbarPipeline::Finished, this, [this, i, hk, pp, processMoodMath](bool success) {
+            if (!success || i >= stars_.size()) return;
+            const QByteArray &data = pp->data();
+            
+            float ax = 0, ay = 0;
+            QVector3D ac;
+            if (processMoodMath(data, ax, ay, ac)) {
+              QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+              vc.setValue(hk+u"_X"_s, ax); vc.setValue(hk+u"_Y"_s, ay);
+              vc.setValue(hk+u"_R"_s, ac.x()); vc.setValue(hk+u"_G"_s, ac.y()); vc.setValue(hk+u"_B"_s, ac.z());
+              vc.setValue(hk+u"_acoustic"_s, true);
+              stars_[i].position = QVector2D(ax, ay);
+              stars_[i].color = ac;
+              update();
+            }
+          }, Qt::QueuedConnection);
+        }
+      }
+#endif
+
+      if (!mood_data.isEmpty()) {
+        if (processMoodMath(mood_data, x, mood_y, col)) {
           has_acoustics = true;
           vibe_cache.setValue(hk+u"_X"_s, x);
           vibe_cache.setValue(hk+u"_Y"_s, mood_y);
@@ -505,19 +497,47 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       constellations_.append({{},{},QVector2D( 1000, 1000),u"Tonal / Pure"_s});
       update();
 
-      // ── PHASE 3: refine BPM per-star in background (non-blocking) ──────────
-      // Each song gets its own tiny task so results trickle in without waiting.
+      // ── PHASE 3a: Vibe Gravitation — pull co-located stars 5% toward cluster centroid
+      {
+        QHash<QPair<int,int>, QVector<int>> clusters; // rounded pos → star indices
+        for (int i = 0; i < stars_.size(); ++i) {
+          int rx = static_cast<int>(std::round(stars_[i].position.x() * 10.0f));
+          int ry = static_cast<int>(std::round(stars_[i].position.y() * 10.0f));
+          clusters[{rx, ry}].append(i);
+        }
+        for (auto it = clusters.cbegin(); it != clusters.cend(); ++it) {
+          const QVector<int> &idx = it.value();
+          if (idx.size() < 2) continue;
+          QVector2D centroid(0,0);
+          for (int i : idx) centroid += stars_[i].position;
+          centroid /= static_cast<float>(idx.size());
+          for (int i : idx)
+            stars_[i].position = stars_[i].position * 0.95f + centroid * 0.05f;
+        }
+      }
+
+      // ── PHASE 3b: refine BPM per-star via Aubio (non-blocking, confidence-weighted)
       for (int i = 0; i < stars_.size(); ++i) {
         const QUrl url = stars_[i].url;
         if (!url.isLocalFile()) continue;
         QtConcurrent::run([this, i, url]() {
-          float bpm = getAubioBPM(url);
-          if (bpm > 0.0f) {
-            QMetaObject::invokeMethod(this, [this, i, bpm]() {
-              if (i < stars_.size()) {
-                stars_[i].bpm = bpm;
-                update();
+          AubioBPMResult res = getAubioBPMData(url);
+          if (res.bpm > 0.0f) {
+            QMetaObject::invokeMethod(this, [this, i, res]() {
+              if (i >= stars_.size()) return;
+              stars_[i].bpm = res.bpm;
+              // Confidence-weighted Y nudge: if the beat is confident and strong,
+              // pull the star slightly toward the BPM-derived position.
+              // Beatless/ambient tracks (low confidence) are left where spectral data put them.
+              // Trust spectral flux variance unless the beat is extremely confident (>0.7)
+              if (res.confidence > 0.7f) {
+                float bpm_y = (res.bpm - 120.0f) * 4.0f;
+                float blend = std::min(res.confidence * 0.7f, 0.5f); // up to 50%
+                stars_[i].position = QVector2D(
+                  stars_[i].position.x(),
+                  stars_[i].position.y() * (1.0f - blend) + bpm_y * blend);
               }
+              update();
             }, Qt::QueuedConnection);
           }
         });

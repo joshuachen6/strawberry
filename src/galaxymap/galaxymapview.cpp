@@ -94,6 +94,11 @@ void GalaxyMapView::Init() {
   QObject::connect(model,   &CollectionModel::SongsRemoved, this, &GalaxyMapView::onSongsChanged);
   // Backend SongsAdded fires as new songs are scanned into the library
   QObject::connect(backend, &CollectionBackend::SongsAdded, this, &GalaxyMapView::onSongsChanged);
+  QObject::connect(backend, &CollectionBackend::SongsDeleted, this, &GalaxyMapView::onSongsChanged);
+  QObject::connect(backend, &CollectionBackend::SongsChanged, this, &GalaxyMapView::onSongsChanged);
+  QObject::connect(backend, &CollectionBackend::DatabaseReset, this, [this]() {
+    fetchSongsFromBackend();
+  });
 
   // Connect album cover loader
   QObject::connect(app_->albumcover_loader().get(), &AlbumCoverLoader::AlbumCoverLoaded,
@@ -167,10 +172,8 @@ void GalaxyMapView::fetchSongsFromBackend() {
     qLog(Debug) << "GalaxyMapView::fetchSongsFromBackend: got" << songs.size() << "songs";
     // Deliver results to the main thread
     QMetaObject::invokeMethod(this, [this, songs]() {
-      if (!songs.isEmpty()) {
-        all_songs_ = songs;
-        buildStars(songs);
-      }
+      all_songs_ = songs;
+      buildStars(songs);
     }, Qt::QueuedConnection);
   }, Qt::QueuedConnection);
 }
@@ -195,7 +198,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   // Pass 1: Compute raw metrics
   for (int i = 0; i < songs.size(); ++i) {
     const Song &song = songs[i];
-    if (!song.is_valid()) {
+    if (!song.is_valid() || song.unavailable()) {
       base_positions.append(QVector2D(0, 0));
       continue;
     }
@@ -244,7 +247,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   // Pass 1.5: Group remasters with originals by canonicalizing the title
   QHash<QString, QVector<int>> title_clusters;
   for (int i = 0; i < songs.size(); ++i) {
-    if (!songs[i].is_valid()) continue;
+    if (!songs[i].is_valid() || songs[i].unavailable()) continue;
     QString t = songs[i].title().toLower();
     for (const QString &s : {u" - remaster"_s, u" (remaster"_s, u" [remaster"_s, u"- remaster"_s}) {
       int idx = t.indexOf(s);
@@ -267,7 +270,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
 
   // Pass 2: Calculate medians for centering
   for (int i = 0; i < songs.size(); ++i) {
-    if (!songs[i].is_valid()) continue;
+    if (!songs[i].is_valid() || songs[i].unavailable()) continue;
     all_x.append(base_positions[i].x());
     all_y.append(base_positions[i].y());
   }
@@ -284,7 +287,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   // Pass 3: Construct stars with medians and generous jitter
   for (int i = 0; i < songs.size(); ++i) {
     const Song &song = songs[i];
-    if (!song.is_valid()) continue;
+    if (!song.is_valid() || song.unavailable()) continue;
 
     uint h = qHash(song.url().toEncoded());
     auto jitter = [&](uint seed, float range) {

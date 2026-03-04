@@ -195,6 +195,10 @@ pkg_check_modules(LIBEBUR128 IMPORTED_TARGET libebur128)
 pkg_check_modules(LIBGPOD IMPORTED_TARGET libgpod-1.0>=0.7.92)
 pkg_check_modules(LIBMTP IMPORTED_TARGET libmtp>=1.0)
 pkg_check_modules(GDK_PIXBUF IMPORTED_TARGET gdk-pixbuf-2.0)
+pkg_check_modules(AUBIO IMPORTED_TARGET aubio>=0.4)
+if(AUBIO_FOUND)
+  set(HAVE_AUBIO ON)
+endif()
 
 find_package(TagLib 2.0)
 if(TARGET TagLib::TagLib)
@@ -1561,6 +1565,7 @@ target_link_libraries(strawberry_lib PUBLIC
   $<$<BOOL:${HAVE_PULSE}>:PkgConfig::LIBPULSE>
   $<$<BOOL:${HAVE_CHROMAPRINT}>:PkgConfig::CHROMAPRINT>
   $<$<BOOL:${HAVE_MOODBAR}>:PkgConfig::FFTW3>
+  $<$<BOOL:${HAVE_AUBIO}>:PkgConfig::AUBIO>
   $<$<BOOL:${HAVE_EBUR128}>:PkgConfig::LIBEBUR128>
   $<$<BOOL:${HAVE_X11_GLOBALSHORTCUTS}>:X11::X11_xcb>
   $<$<BOOL:${HAVE_GIO}>:PkgConfig::GIO>

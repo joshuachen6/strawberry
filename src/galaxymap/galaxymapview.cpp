@@ -41,6 +41,72 @@
 #include "moodbar/moodbarloader.h"
 #endif
 
+#ifdef HAVE_AUBIO
+#include <aubio/aubio.h>
+
+static float getAubioBPM(const QUrl& url) {
+    if (!url.isLocalFile()) return 120.0f;
+    QString path = url.toLocalFile();
+    
+    // Quick in-memory cache to avoid recalculating every time we rebuild map
+    static QHash<QString, float> s_bpmCache;
+    if (s_bpmCache.contains(path)) return s_bpmCache.value(path);
+
+    uint_t samplerate = 0; 
+    uint_t hop_size = 256;
+    
+    QByteArray pathBa = path.toUtf8();
+    aubio_source_t * source = new_aubio_source(pathBa.constData(), samplerate, hop_size);
+    if (!source) {
+        s_bpmCache.insert(path, 120.0f);
+        return 120.0f;
+    }
+    
+    samplerate = aubio_source_get_samplerate(source);
+    if (samplerate == 0) samplerate = 44100;
+    
+    aubio_tempo_t * tempo = new_aubio_tempo("default", 1024, hop_size, samplerate);
+    if (!tempo) {
+        del_aubio_source(source);
+        s_bpmCache.insert(path, 120.0f);
+        return 120.0f;
+    }
+    
+    fvec_t * in = new_fvec(hop_size);
+    fvec_t * out = new_fvec(2);
+    
+    // Seek to 30s to avoid intro and get to the beat
+    aubio_source_seek(source, samplerate * 30);
+    
+    uint_t read = 0;
+    // Read up to 20 seconds of audio to get a reading
+    uint_t max_blocks = (20 * samplerate) / hop_size;
+    uint_t blocks = 0;
+    
+    do {
+        aubio_source_do(source, in, &read);
+        aubio_tempo_do(tempo, in, out);
+        blocks++;
+    } while (read == hop_size && blocks < max_blocks);
+    
+    float bpm = aubio_tempo_get_bpm(tempo);
+    
+    del_aubio_tempo(tempo);
+    del_aubio_source(source);
+    del_fvec(in);
+    del_fvec(out);
+    
+    if (bpm <= 0.0f || std::isinf(bpm) || std::isnan(bpm)) {
+        bpm = 120.0f;
+    }
+    
+    s_bpmCache.insert(path, bpm);
+    return bpm;
+}
+#else
+static float getAubioBPM(const QUrl&) { return 120.0f; }
+#endif
+
 using namespace Qt::Literals::StringLiterals;
 #include <QImageReader>
 
@@ -220,13 +286,41 @@ void GalaxyMapView::buildStars(const SongList &songs) {
             gSum += static_cast<unsigned char>(data[j * 3 + 1]);
             bSum += static_cast<unsigned char>(data[j * 3 + 2]);
           }
+          // Average the sums
           rSum /= n; gSum /= n; bSum /= n;
-          double total = rSum + gSum + bSum + 0.1;
           
-          float intensity = static_cast<float>((rSum + gSum + bSum) / 3.0);
-          x = (intensity - 128.0f) * 120.0f; // Scaled up map to reduce overlap
+          // Higher overall brightness means higher energy
+          double energy = rSum + gSum + bSum;
           
-          mood_y = static_cast<float>((bSum - rSum) / total) * 6000.0f;
+          // Calculate a "pseudo spectral centroid".
+          // If R=low, G=mid, B=high (roughly), centroid is weighted sum:
+          double centroid = (1.0 * rSum + 2.0 * gSum + 3.0 * bSum) / (energy + 0.1);
+          
+          // Calculate "flatness" or "richness" based on variance
+          double vari_r = 0, vari_g = 0, vari_b = 0;
+          for (int j = 0; j < n; ++j) {
+            vari_r += std::pow((static_cast<unsigned char>(data[j * 3]) - rSum), 2);
+            vari_g += std::pow((static_cast<unsigned char>(data[j * 3 + 1]) - gSum), 2);
+            vari_b += std::pow((static_cast<unsigned char>(data[j * 3 + 2]) - bSum), 2);
+          }
+          vari_r /= n; vari_g /= n; vari_b /= n;
+          
+          double variance = vari_r + vari_g + vari_b;
+          double flatness = variance / (energy + 1.0); // Rough approximation of tonality vs noise
+          
+          // Combine BPM (if available) with Energy to determine Radius
+          float bpm = song.bpm() > 0 ? song.bpm() : getAubioBPM(song.url());
+          float base_radius = (energy * 1.5f) + (bpm * 1.5f);
+          
+          // Angle determined by musical tone (Centroid + Flatness)
+          float theta = (centroid * 15.0f) + (flatness * 0.005f);
+          
+          x = base_radius * 4.0f * std::cos(theta);
+          mood_y = base_radius * 4.0f * std::sin(theta);
+          
+          if (std::isnan(x) || std::isinf(x)) x = 0.0f;
+          if (std::isnan(mood_y) || std::isinf(mood_y)) mood_y = 0.0f;
+          
           has_acoustics = true;
         }
       }
@@ -235,37 +329,14 @@ void GalaxyMapView::buildStars(const SongList &songs) {
 
     if (!has_acoustics) {
       float length_sec = static_cast<float>(song.length_nanosec()) / 1e9f;
-      float theta = (length_sec / 90.0f) * 2.0f * M_PI;
-      float r = 200.0f + length_sec * 45.0f; // Scaled up
+      float bpm = song.bpm() > 0 ? song.bpm() : getAubioBPM(song.url());
+      float r = bpm * 4.0f + length_sec * 0.5f;
+      float theta = ((length_sec / 360.0f) * M_PI * 2.0f) + (bpm * 0.01f);
       x = r * std::cos(theta);
       mood_y = r * std::sin(theta);
     }
 
     base_positions.append(QVector2D(x, mood_y));
-  }
-
-  // Pass 1.5: Group remasters with originals by canonicalizing the title
-  QHash<QString, QVector<int>> title_clusters;
-  for (int i = 0; i < songs.size(); ++i) {
-    if (!songs[i].is_valid() || songs[i].unavailable()) continue;
-    QString t = songs[i].title().toLower();
-    for (const QString &s : {u" - remaster"_s, u" (remaster"_s, u" [remaster"_s, u"- remaster"_s}) {
-      int idx = t.indexOf(s);
-      if (idx != -1) t = t.left(idx);
-    }
-    QString key = t.trimmed() + u"|" + songs[i].artist().toLower();
-    title_clusters[key].append(i);
-  }
-
-  for (auto it = title_clusters.begin(); it != title_clusters.end(); ++it) {
-    const QVector<int> &indices = it.value();
-    if (indices.size() > 1) {
-      float mx = 0, my = 0;
-      for (int idx : indices) { mx += base_positions[idx].x(); my += base_positions[idx].y(); }
-      mx /= indices.size();
-      my /= indices.size();
-      for (int idx : indices) { base_positions[idx] = QVector2D(mx, my); }
-    }
   }
 
   // Pass 2: Calculate medians for centering
@@ -294,8 +365,8 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       return (static_cast<float>(qHash(h ^ seed) % 10000) / 10000.0f - 0.5f) * range;
     };
 
-    float x = base_positions[i].x() - med_x + jitter(0x1234, 450.0f);
-    float y = base_positions[i].y() - med_y + jitter(0x5678, 450.0f);
+    float x = base_positions[i].x() - med_x + jitter(0x1234, 150.0f);
+    float y = base_positions[i].y() - med_y + jitter(0x5678, 150.0f);
 
     float hue = static_cast<float>(qHash(song.effective_albumartist().toLower()) % 360) / 360.0f;
     float sat = std::clamp(0.6f + std::min(1.0f, std::max(0.0f, song.rating())) * 0.2f, 0.0f, 1.0f);

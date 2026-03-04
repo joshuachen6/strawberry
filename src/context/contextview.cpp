@@ -683,7 +683,8 @@ void ContextView::UpdateTrackPosition(qint64 nanoseconds) {
 
   int active_line = -1;
   for (int i = 0; i < synced_lyrics_.size(); ++i) {
-    if (nanoseconds >= synced_lyrics_[i].timestamp_nsec) {
+    // Add 800ms (800,000,000 nsec) lookahead so lyrics begin fading out/in slightly before the exact beat
+    if (nanoseconds + 800000000LL >= synced_lyrics_[i].timestamp_nsec) {
       active_line = i;
     } else {
       break;

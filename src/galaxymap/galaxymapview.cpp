@@ -339,10 +339,27 @@ void GalaxyMapView::buildStars(const SongList &songs) {
     artist_groups[artistKey].append(i);
   }
 
-  float maxDistWorld = 450.0f; // Max distance between two stars to be in the same constellation
+  float maxDistWorld = 850.0f; // Increased to 850.0f so jitter doesn't disconnect related stars
+
+  struct Edge {
+    int i, j;
+    float distSq;
+    bool operator<(const Edge& o) const { return distSq < o.distSq; }
+  };
 
   for (auto it = artist_groups.begin(); it != artist_groups.end(); ++it) {
     const QVector<int>& indices = it.value();
+    
+    QVector<Edge> candidate_edges;
+    for (int i = 0; i < indices.size(); ++i) {
+      for (int j = i + 1; j < indices.size(); ++j) {
+        float distSq = (stars_[indices[i]].position - stars_[indices[j]].position).lengthSquared();
+        if (distSq < maxDistWorld * maxDistWorld) {
+          candidate_edges.append({i, j, distSq});
+        }
+      }
+    }
+    std::sort(candidate_edges.begin(), candidate_edges.end());
     
     QVector<int> parent(indices.size());
     for (int i = 0; i < indices.size(); ++i) parent[i] = i;
@@ -354,18 +371,14 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       while (curr != root) { int nxt = parent[curr]; parent[curr] = root; curr = nxt; }
       return root;
     };
-    auto unite = [&](int i, int j) {
-      int rootI = find(i);
-      int rootJ = find(j);
-      if (rootI != rootJ) parent[rootI] = rootJ;
-    };
 
-    for (int i = 0; i < indices.size(); ++i) {
-      for (int j = i + 1; j < indices.size(); ++j) {
-        float distSq = (stars_[indices[i]].position - stars_[indices[j]].position).lengthSquared();
-        if (distSq < maxDistWorld * maxDistWorld) {
-          unite(i, j);
-        }
+    QVector<QPair<int, int>> mst_edges;
+    for (const Edge& e : candidate_edges) {
+      int rootI = find(e.i);
+      int rootJ = find(e.j);
+      if (rootI != rootJ) {
+        parent[rootI] = rootJ;
+        mst_edges.append(qMakePair(indices[e.i], indices[e.j]));
       }
     }
 
@@ -384,7 +397,14 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       for (int idx : cluster) centroid += stars_[idx].position;
       centroid /= cluster.size();
       
-      constellations_.append({cluster, centroid, lbl});
+      QVector<QPair<int, int>> cluster_edges;
+      for (const auto& edge : mst_edges) {
+        if (cluster.contains(edge.first)) {
+           cluster_edges.append(edge);
+        }
+      }
+      
+      constellations_.append({cluster, cluster_edges, centroid, lbl});
     }
   }
 
@@ -679,13 +699,10 @@ void GalaxyMapView::drawConstellationView(QPainter &p) {
                 static_cast<int>(100 * blend));
       p.setPen(QPen(ac, 1.5, Qt::DashLine));
       
-      for (int i = 0; i < c.star_indices.size(); ++i) {
-        for (int j = i + 1; j < c.star_indices.size(); ++j) {
-          float distSq = (stars_[c.star_indices[i]].position - stars_[c.star_indices[j]].position).lengthSquared();
-          if (distSq < 450.0f * 450.0f) {
-             p.drawLine(screenPoints[i], screenPoints[j]);
-          }
-        }
+      for (const auto& edge : c.edges) {
+        QPointF p1 = worldToScreen(stars_[edge.first].position);
+        QPointF p2 = worldToScreen(stars_[edge.second].position);
+        p.drawLine(p1, p2);
       }
     }
 

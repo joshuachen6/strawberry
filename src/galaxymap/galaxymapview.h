@@ -40,6 +40,7 @@ struct GalaxyStar {
 
 struct GalaxyConstellation {
   QVector<int> star_indices;
+  QVector<QPair<int, int>> edges;
   QVector2D centroid; // in world coordinates
   QString label;
 };

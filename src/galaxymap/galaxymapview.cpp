@@ -254,7 +254,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   update();
 
   // Version sentinel — clear stale cache if math changed
-  const int kVibeVersion = 7;
+  const int kVibeVersion = 8;
   {
     QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
     if (vc.value(u"__version"_s).toInt() != kVibeVersion) {
@@ -263,109 +263,162 @@ void GalaxyMapView::buildStars(const SongList &songs) {
     }
   }
 
-  // ── PHASE 0 (main thread): Pre-read cache ───────────────────────────────────
-  struct CacheEntry { float x, y, r, g, b; };
-  QHash<QString, CacheEntry> cache_map;
+  // ── PHASE 0 (main thread): read MoodbarLoader and QSettings ─────────────────
+  // MoodbarLoader is a QObject — must stay on main thread.
+  // We collect plain byte arrays + booleans; no Qt objects leave this scope.
+  struct RawEntry {
+    QByteArray mood_data;
+    bool       from_cache;
+    float      cached_x, cached_y;
+    float      cached_r, cached_g, cached_b;
+    bool       will_async;
+    MoodbarPipelinePtr pipeline;
+  };
+
+  QVector<RawEntry> raw;
+  raw.reserve(songs.size());
+
   QVector<uint> jitter_seeds;
   jitter_seeds.reserve(songs.size());
 
   {
-    QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+    QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+
     for (int i = 0; i < songs.size(); ++i) {
       const Song &song = songs[i];
       jitter_seeds.append(qHash(song.url().toEncoded()));
-      
-      if (!song.is_valid() || song.unavailable()) continue;
+
+      RawEntry e{};
+      if (!song.is_valid() || song.unavailable()) { raw.append(e); continue; }
+
       QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
-      if (vc.value(hk + u"_acoustic"_s).toBool()) {
-        cache_map.insert(hk, {
-          vc.value(hk + u"_X"_s).toFloat(),
-          vc.value(hk + u"_Y"_s).toFloat(),
-          vc.value(hk + u"_R"_s).toFloat(),
-          vc.value(hk + u"_G"_s).toFloat(),
-          vc.value(hk + u"_B"_s).toFloat()
-        });
+      if (vibe_cache.value(hk + u"_acoustic"_s).toBool()) {
+        e.from_cache = true;
+        e.cached_x = vibe_cache.value(hk + u"_X"_s).toFloat();
+        e.cached_y = vibe_cache.value(hk + u"_Y"_s).toFloat();
+        e.cached_r = vibe_cache.value(hk + u"_R"_s).toFloat();
+        e.cached_g = vibe_cache.value(hk + u"_G"_s).toFloat();
+        e.cached_b = vibe_cache.value(hk + u"_B"_s).toFloat();
+        raw.append(e); continue;
       }
+
+#ifdef HAVE_MOODBAR
+      if (app_->moodbar_loader()) {
+        MoodbarLoader::LoadResult res = app_->moodbar_loader()->Load(song.url(), song.has_cue());
+        if (res.status == MoodbarLoader::LoadStatus::Loaded && !res.data.isEmpty()) {
+          e.mood_data = res.data;
+        } else if (res.status == MoodbarLoader::LoadStatus::WillLoadAsync && res.pipeline) {
+          e.will_async = true;
+          e.pipeline = res.pipeline;
+        }
+      }
+#endif
+      raw.append(e);
     }
   }
 
-  // ── PHASE 1 (background): Load Moodbars & Math ──────────────────────────────
-  auto future_ = QtConcurrent::run([this, songs, cache_map, jitter_seeds]() {
+  // Reusable math logic for both blocking load and async load
+  auto processMoodMath = [](const QByteArray &data, float &x, float &mood_y, QVector3D &col) {
+    int n = data.size() / 3;
+    if (n <= 0) return false;
+
+    double rSum = 0, gSum = 0, bSum = 0;
+    double bSumSq = 0;
+
+    for (int j = 0; j < n; ++j) {
+      double r = static_cast<unsigned char>(data[j*3]);
+      double g = static_cast<unsigned char>(data[j*3+1]);
+      double b = static_cast<unsigned char>(data[j*3+2]);
+      rSum += r; gSum += g; bSum += b;
+      bSumSq += b * b;
+    }
+
+    double meanR = rSum / n, meanG = gSum / n, meanB = bSum / n;
+    double normR = meanR / 255.0, normG = meanG / 255.0, normB = meanB / 255.0;
+
+    // X-axis: Spectral Shape (Spectral Skewness)
+    x = static_cast<float>((normB - normR) * (1.0 + (normB / (normG + 0.1))) * 500.0);
+
+    // Y-axis: Pulse Entropy (Flux Variance relative to Mean Flux)
+    double fluxSum = 0.0, fluxSumSq = 0.0;
+    double prevLum = (static_cast<unsigned char>(data[0])*0.2126
+                    + static_cast<unsigned char>(data[1])*0.7152
+                    + static_cast<unsigned char>(data[2])*0.0722);
+    for (int j = 1; j < n; ++j) {
+      double lum = (static_cast<unsigned char>(data[j*3  ])*0.2126
+                  + static_cast<unsigned char>(data[j*3+1])*0.7152
+                  + static_cast<unsigned char>(data[j*3+2])*0.0722);
+      double flux = std::abs(lum - prevLum);
+      fluxSum += flux;
+      fluxSumSq += flux * flux;
+      prevLum = lum;
+    }
+    double avgFlux = fluxSum / (n - 1);
+    double fluxVar = std::max(0.0, (fluxSumSq / (n - 1)) - (avgFlux * avgFlux));
+    mood_y = static_cast<float>(1000.0 * std::log10(1.0 + (fluxVar / (avgFlux + 1.0))));
+
+    // Frequency Jitter: B-channel variance offset
+    double bVar = std::max(0.0, (bSumSq / n) - (meanB * meanB));
+    float bJitter = static_cast<float>(std::sqrt(bVar) / 255.0 * 60.0 - 30.0);
+    x += bJitter;
+
+    if (std::isnan(x) || std::isinf(x)) x = 0;
+    if (std::isnan(mood_y) || std::isinf(mood_y)) mood_y = 0;
+
+    // Z-axis/Color: Spectral Contrast (Saturation)
+    double meanColor = (normR + normG + normB) / 3.0;
+    double varColor = ((normR - meanColor)*(normR - meanColor) 
+                     + (normG - meanColor)*(normG - meanColor) 
+                     + (normB - meanColor)*(normB - meanColor)) / 3.0;
+    double stdColor = std::sqrt(varColor);
+    double saturation = std::clamp(stdColor * 2.5, 0.0, 1.0);
+
+    QColor tc; tc.setRgbF(normR, normG, normB);
+    if (!tc.isValid()) tc = QColor(100, 150, 255);
+    float h, s, v; tc.getHsvF(&h, &s, &v);
+    s = static_cast<float>(saturation);
+    tc.setHsvF(h, s, v);
+    col = QVector3D(tc.redF(), tc.greenF(), tc.blueF());
+
+    return true;
+  };
+
+  // Set up async pipeline callbacks on main thread (they update stars_ later)
+  for (int i = 0; i < raw.size(); ++i) {
+    if (!raw[i].will_async || !raw[i].pipeline) continue;
+    const Song &song = songs[i];
+    MoodbarPipelinePtr pp = raw[i].pipeline;
+    QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
+    connect(pp.get(), &MoodbarPipeline::Finished, this, [this, i, hk, pp, processMoodMath](bool success) {
+      if (!success || i >= stars_.size()) return;
+      const QByteArray &data = pp->data();
+      
+      float ax = 0, ay = 0;
+      QVector3D ac;
+      if (processMoodMath(data, ax, ay, ac)) {
+        QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+        vc.setValue(hk+u"_X"_s, ax); vc.setValue(hk+u"_Y"_s, ay);
+        vc.setValue(hk+u"_R"_s, ac.x()); vc.setValue(hk+u"_G"_s, ac.y()); vc.setValue(hk+u"_B"_s, ac.z());
+        vc.setValue(hk+u"_acoustic"_s, true);
+        stars_[i].position = QVector2D(ax, ay);
+        stars_[i].color = ac;
+        update();
+      }
+    }); // Qt::AutoConnection is fine here since both emit and catch are on main thread
+  }
+
+  // ── PHASE 1 (background): coordinate math ──────────────────────────────
+  auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds, processMoodMath]() {
     struct SongEntry { QVector2D pos; QVector3D col; float bpm; };
     QVector<SongEntry> entries;
     entries.reserve(songs.size());
     QRandomGenerator bg_rng(0xDEADBEEF);
     QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
 
-    // Reusable math logic for both blocking load and async load
-    auto processMoodMath = [](const QByteArray &data, float &x, float &mood_y, QVector3D &col) {
-      int n = data.size() / 3;
-      if (n <= 0) return false;
-
-      double rSum = 0, gSum = 0, bSum = 0;
-      double bSumSq = 0;
-
-      for (int j = 0; j < n; ++j) {
-        double r = static_cast<unsigned char>(data[j*3]);
-        double g = static_cast<unsigned char>(data[j*3+1]);
-        double b = static_cast<unsigned char>(data[j*3+2]);
-        rSum += r; gSum += g; bSum += b;
-        bSumSq += b * b;
-      }
-
-      double meanR = rSum / n, meanG = gSum / n, meanB = bSum / n;
-      double normR = meanR / 255.0, normG = meanG / 255.0, normB = meanB / 255.0;
-
-      // X-axis: Spectral Shape (Spectral Skewness)
-      x = static_cast<float>((normB - normR) * (1.0 + normG) * 500.0);
-
-      // Y-axis: Pulse Entropy (Flux Variance over Mean Energy)
-      double fluxSum = 0.0, fluxSumSq = 0.0;
-      double prevLum = (static_cast<unsigned char>(data[0])*0.2126
-                      + static_cast<unsigned char>(data[1])*0.7152
-                      + static_cast<unsigned char>(data[2])*0.0722);
-      for (int j = 1; j < n; ++j) {
-        double lum = (static_cast<unsigned char>(data[j*3  ])*0.2126
-                    + static_cast<unsigned char>(data[j*3+1])*0.7152
-                    + static_cast<unsigned char>(data[j*3+2])*0.0722);
-        double flux = std::abs(lum - prevLum);
-        fluxSum += flux;
-        fluxSumSq += flux * flux;
-        prevLum = lum;
-      }
-      double avgFlux = fluxSum / (n - 1);
-      double fluxVar = std::max(0.0, (fluxSumSq / (n - 1)) - (avgFlux * avgFlux));
-      double meanEnergy = (meanR + meanG + meanB) / 3.0;
-      mood_y = static_cast<float>(1000.0 * std::log10(1.0 + (fluxVar / (meanEnergy + 1.0))));
-
-      // Frequency Jitter: B-channel variance offset
-      double bVar = std::max(0.0, (bSumSq / n) - (meanB * meanB));
-      float bJitter = static_cast<float>(std::sqrt(bVar) / 255.0 * 60.0 - 30.0);
-      x += bJitter;
-
-      if (std::isnan(x) || std::isinf(x)) x = 0;
-      if (std::isnan(mood_y) || std::isinf(mood_y)) mood_y = 0;
-
-      // Z-axis/Color: Spectral Contrast (Saturation)
-      double meanColor = (normR + normG + normB) / 3.0;
-      double varColor = ((normR - meanColor)*(normR - meanColor) 
-                       + (normG - meanColor)*(normG - meanColor) 
-                       + (normB - meanColor)*(normB - meanColor)) / 3.0;
-      double stdColor = std::sqrt(varColor);
-      double saturation = std::clamp(stdColor * 2.5, 0.0, 1.0);
-
-      QColor tc; tc.setRgbF(normR, normG, normB);
-      if (!tc.isValid()) tc = QColor(100, 150, 255);
-      float h, s, v; tc.getHsvF(&h, &s, &v);
-      s = static_cast<float>(saturation);
-      tc.setHsvF(h, s, v);
-      col = QVector3D(tc.redF(), tc.greenF(), tc.blueF());
-
-      return true;
-    };
-
     for (int i = 0; i < songs.size(); ++i) {
       const Song &song = songs[i];
+      const RawEntry &re = raw[i];
+
       if (!song.is_valid() || song.unavailable()) {
         entries.append({QVector2D(0,0), QVector3D(0.5f,0.5f,0.5f), 120.0f});
         continue;
@@ -374,46 +427,17 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       float bpm = song.bpm() > 0.0f ? song.bpm() : 120.0f;
       QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
 
-      if (cache_map.contains(hk)) {
-        CacheEntry ce = cache_map.value(hk);
-        entries.append({QVector2D(ce.x, ce.y), QVector3D(ce.r, ce.g, ce.b), bpm});
+      if (re.from_cache) {
+        entries.append({QVector2D(re.cached_x, re.cached_y), QVector3D(re.cached_r, re.cached_g, re.cached_b), bpm});
         continue;
       }
 
       float x = 0, mood_y = 0;
       QVector3D col(0.5f,0.5f,0.5f);
       bool has_acoustics = false;
-      QByteArray mood_data;
 
-#ifdef HAVE_MOODBAR
-      if (app_->moodbar_loader()) {
-        MoodbarLoader::LoadResult res = app_->moodbar_loader()->Load(song.url(), song.has_cue());
-        if (res.status == MoodbarLoader::LoadStatus::Loaded && !res.data.isEmpty()) {
-          mood_data = res.data;
-        } else if (res.status == MoodbarLoader::LoadStatus::WillLoadAsync && res.pipeline) {
-          MoodbarPipelinePtr pp = res.pipeline;
-          connect(pp.get(), &MoodbarPipeline::Finished, this, [this, i, hk, pp, processMoodMath](bool success) {
-            if (!success || i >= stars_.size()) return;
-            const QByteArray &data = pp->data();
-            
-            float ax = 0, ay = 0;
-            QVector3D ac;
-            if (processMoodMath(data, ax, ay, ac)) {
-              QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
-              vc.setValue(hk+u"_X"_s, ax); vc.setValue(hk+u"_Y"_s, ay);
-              vc.setValue(hk+u"_R"_s, ac.x()); vc.setValue(hk+u"_G"_s, ac.y()); vc.setValue(hk+u"_B"_s, ac.z());
-              vc.setValue(hk+u"_acoustic"_s, true);
-              stars_[i].position = QVector2D(ax, ay);
-              stars_[i].color = ac;
-              update();
-            }
-          }, Qt::QueuedConnection);
-        }
-      }
-#endif
-
-      if (!mood_data.isEmpty()) {
-        if (processMoodMath(mood_data, x, mood_y, col)) {
+      if (!re.mood_data.isEmpty()) {
+        if (processMoodMath(re.mood_data, x, mood_y, col)) {
           has_acoustics = true;
           vibe_cache.setValue(hk+u"_X"_s, x);
           vibe_cache.setValue(hk+u"_Y"_s, mood_y);

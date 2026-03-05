@@ -37,9 +37,14 @@ struct GalaxyStar {
   QUrl url;              // Song URL
   int song_id;
   float bpm;
+  float bpm_confidence;
   int all_songs_index;   // Index into GalaxyMapView::all_songs_
   QString genre;
   QString album_key;
+  float lyrical_density;
+  float temporal_movement;
+  float harmonic_complexity;
+  float genre_purity;
 };
 
 struct GalaxyConstellation {
@@ -47,6 +52,12 @@ struct GalaxyConstellation {
   QVector<QPair<int, int>> edges;
   QVector2D centroid; // in world coordinates
   QString label;
+};
+
+struct GenreContinent {
+  QString label;
+  QVector2D centroid;
+  QColor color;
 };
 
 class GalaxyMapView : public QWidget {
@@ -93,6 +104,7 @@ class GalaxyMapView : public QWidget {
   void drawConstellationView(QPainter &p);
   void drawPlanetView(QPainter &p);
   void drawParallaxBackground(QPainter &p);
+  void drawGenreLabels(QPainter &p);
 
   QPointF worldToScreen(QVector2D world) const;
   QVector2D screenToWorld(QPointF screen) const;
@@ -111,6 +123,7 @@ class GalaxyMapView : public QWidget {
 
   QVector<GalaxyStar> stars_;
   QVector<GalaxyConstellation> constellations_;
+  QVector<GenreContinent> genre_continents_;
   SongList all_songs_;  // authoritative song list from backend
 
   QMap<QString, QPixmap> album_art_cache_;       // album_key -> pixmap

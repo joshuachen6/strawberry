@@ -131,6 +131,7 @@ class SettingsDialog : public QDialog {
  Q_SIGNALS:
   void ReloadSettings();
   void NotificationPreview(const OSDSettings::Type, const QString&, const QString&);
+  void GalaxyDatabaseCleared();
 
  private Q_SLOTS:
   void CurrentItemChanged(QTreeWidgetItem *item);

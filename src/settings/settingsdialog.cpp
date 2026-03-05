@@ -274,6 +274,12 @@ void SettingsDialog::AddPage(const Page id, SettingsPage *page, QTreeWidgetItem 
 
   // Connect page's signals to the settings dialog's signals
   QObject::connect(page, &SettingsPage::NotificationPreview, this, &SettingsDialog::NotificationPreview);
+  
+  if (id == Page::Appearance) {
+    if (AppearanceSettingsPage *asp = qobject_cast<AppearanceSettingsPage*>(page)) {
+      QObject::connect(asp, &AppearanceSettingsPage::GalaxyDatabaseCleared, this, &SettingsDialog::GalaxyDatabaseCleared);
+    }
+  }
 
   // Create the list item
   QTreeWidgetItem *item = new QTreeWidgetItem;

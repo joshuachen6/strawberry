@@ -3249,6 +3249,8 @@ SettingsDialog *MainWindow::CreateSettingsDialog() {
   // Allows custom notification preview
   QObject::connect(settings_dialog, &SettingsDialog::NotificationPreview, this, &MainWindow::HandleNotificationPreview);
 
+  QObject::connect(settings_dialog, &SettingsDialog::GalaxyDatabaseCleared, galaxymap_view_, &GalaxyMapView::ResetScanFlag);
+
   return settings_dialog;
 
 }

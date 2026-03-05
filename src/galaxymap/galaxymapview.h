@@ -16,6 +16,9 @@
 #include <QString>
 #include "core/song.h"
 
+#include <QProcess>
+#include <QFileSystemWatcher>
+
 class Application;
 class AlbumCoverLoaderResult;
 
@@ -35,6 +38,7 @@ struct GalaxyStar {
   int song_id;
   float bpm;
   int all_songs_index;   // Index into GalaxyMapView::all_songs_
+  QString genre;
   QString album_key;
 };
 
@@ -53,6 +57,8 @@ class GalaxyMapView : public QWidget {
   ~GalaxyMapView() override;
 
   void Init();
+  // Reset the scan flag
+  void ResetScanFlag();
 
   // Zoom thresholds (world-space pixels per unit)
   static constexpr float kZoomStarView      = 0.18f;   // < zoomed out
@@ -77,10 +83,11 @@ class GalaxyMapView : public QWidget {
   void onAlbumCoverLoaded(quint64 id, const AlbumCoverLoaderResult &result);
 
  private:
-  void fetchSongsFromBackend();
+  void fetchSongsFromBackend(bool force_scan = false);
+  void DeepEmbeddings(bool force_scan = false);
   void buildPlaceholderStars();
   void tryLoadFromModel();
-  void buildStars(const SongList &songs);
+  void buildStars(const SongList &songs, bool force_scan = false);
   void loadStarArt(int idx);
   void drawStarView(QPainter &p);
   void drawConstellationView(QPainter &p);
@@ -98,6 +105,7 @@ class GalaxyMapView : public QWidget {
   QVector2D velocity_;
   bool is_dragging_;
   QPointF last_mouse_pos_;
+  QPointF press_start_pos_;
 
   float anim_time_;  // accumulated animation time (seconds)
 
@@ -113,6 +121,14 @@ class GalaxyMapView : public QWidget {
   int hovered_star_;  // index of hovered star, -1 if none
   int selected_star_; // index of selected star, -1 if none
   float select_pulse_; // pulse ring animation [0..1]
+  
+  QFileSystemWatcher *db_watcher_;
+  QProcess *deep_embedding_process_;
+  QString deep_embedding_status_;
+  float deep_embedding_progress_;
+  QTimer *live_reveal_timer_;
+  bool deep_embedding_started_;
+  bool deep_embedding_scan_once_;
 };
 
 #endif // GALAXYMAPVIEW_H

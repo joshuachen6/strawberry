@@ -26,11 +26,17 @@
 #include <QSet>
 #include <QDebug>
 #include <QSettings>
+#include <QThread>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QSqlRecord>
 #include <QVariant>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QFileSystemWatcher>
+#include <QDir>
 
 #include "constants/appearancesettings.h"
 #include "core/settings.h"
@@ -121,21 +127,6 @@ using namespace Qt::Literals::StringLiterals;
 
 namespace {
 
-// Extract dominant colour from a QPixmap (fast approximate)
-QVector3D dominantColor(const QPixmap &pix) {
-  if (pix.isNull()) return QVector3D(0.5f, 0.5f, 1.0f);
-  QImage img = pix.scaled(8, 8, Qt::IgnoreAspectRatio, Qt::FastTransformation).toImage();
-  long long r = 0, g = 0, b = 0, n = 0;
-  for (int y = 0; y < img.height(); ++y) {
-    for (int x = 0; x < img.width(); ++x) {
-      QColor c = img.pixelColor(x, y);
-      r += c.red(); g += c.green(); b += c.blue(); ++n;
-    }
-  }
-  if (n == 0) return QVector3D(0.5f, 0.7f, 1.0f);
-  return QVector3D(r / (255.0f * n), g / (255.0f * n), b / (255.0f * n));
-}
-
 }  // namespace
 
 GalaxyMapView::GalaxyMapView(Application *app, QWidget *parent)
@@ -149,7 +140,13 @@ GalaxyMapView::GalaxyMapView(Application *app, QWidget *parent)
       anim_time_(0.0f),
       hovered_star_(-1),
       selected_star_(-1),
-      select_pulse_(0.0f) {
+      select_pulse_(0.0f),
+      db_watcher_(nullptr),
+      deep_embedding_process_(nullptr),
+      deep_embedding_progress_(-1.0f),
+      live_reveal_timer_(nullptr),
+      deep_embedding_started_(false),
+      deep_embedding_scan_once_(false) {
   setMouseTracking(true);
   setAttribute(Qt::WA_OpaquePaintEvent);
   setMinimumSize(200, 200);
@@ -158,7 +155,16 @@ GalaxyMapView::GalaxyMapView(Application *app, QWidget *parent)
   timer_->start(16);  // ~60fps
 }
 
-GalaxyMapView::~GalaxyMapView() = default;
+GalaxyMapView::~GalaxyMapView() {
+    if (deep_embedding_process_) {
+        deep_embedding_process_->kill();
+        deep_embedding_process_->waitForFinished(1000);
+        delete deep_embedding_process_;
+    }
+    if (live_reveal_timer_) {
+        live_reveal_timer_->stop();
+    }
+}
 
 void GalaxyMapView::Init() {
   CollectionBackend *backend = app_->collection_backend().get();
@@ -179,6 +185,32 @@ void GalaxyMapView::Init() {
   QObject::connect(app_->albumcover_loader().get(), &AlbumCoverLoader::AlbumCoverLoaded,
                    this, &GalaxyMapView::onAlbumCoverLoaded);
 
+  // Database Monitoring for Deep Embeddings
+  if (!db_watcher_) {
+    db_watcher_ = new QFileSystemWatcher(this);
+    QString db_dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/strawberry/strawberry");
+    QString db_path = db_dir + QStringLiteral("/galaxy_embeddings.db");
+    
+    QDir().mkpath(db_dir);
+    db_watcher_->addPath(db_dir);
+    if (QFile::exists(db_path)) {
+      db_watcher_->addPath(db_path);
+    }
+    connect(db_watcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
+      if (path.endsWith(QStringLiteral("galaxy_embeddings.db"))) {
+        if (!deep_embedding_process_ || deep_embedding_process_->state() == QProcess::NotRunning) {
+          fetchSongsFromBackend();
+        }
+      }
+    });
+    connect(db_watcher_, &QFileSystemWatcher::directoryChanged, this, [this, db_path]() {
+      if (QFile::exists(db_path) && !db_watcher_->files().contains(db_path)) {
+        db_watcher_->addPath(db_path);
+        fetchSongsFromBackend();
+      }
+    });
+  }
+
   // Step 1: Show placeholder dots immediately so the canvas isn't blank
   buildPlaceholderStars();
 
@@ -189,11 +221,22 @@ void GalaxyMapView::Init() {
   fetchSongsFromBackend();
 }
 
+void GalaxyMapView::ResetScanFlag() {
+  if (deep_embedding_process_) {
+    deep_embedding_process_->kill();
+    deep_embedding_process_->waitForFinished(1000);
+  }
+  deep_embedding_started_ = false;
+  deep_embedding_scan_once_ = false;
+  deep_embedding_progress_ = -1.0f;
+  fetchSongsFromBackend(true); // Manually requested full scan
+}
+
 void GalaxyMapView::showEvent(QShowEvent *event) {
   QWidget::showEvent(event);
   if (all_songs_.isEmpty()) {
     tryLoadFromModel();
-    fetchSongsFromBackend();
+    fetchSongsFromBackend(false);
   }
 }
 
@@ -213,6 +256,8 @@ void GalaxyMapView::leaveEvent(QEvent *event) {
 
 void GalaxyMapView::buildPlaceholderStars() {
   stars_.clear();
+  selected_star_ = -1;
+  hovered_star_ = -1;
   update();
 }
 
@@ -236,33 +281,114 @@ void GalaxyMapView::tryLoadFromModel() {
 
 void GalaxyMapView::onSongsChanged(const SongList &changed) {
   Q_UNUSED(changed)
-  fetchSongsFromBackend();
+  QMetaObject::invokeMethod(this, [this]() {
+    fetchSongsFromBackend(false);
+  }, Qt::QueuedConnection);
 }
 
-void GalaxyMapView::fetchSongsFromBackend() {
+void GalaxyMapView::fetchSongsFromBackend(bool force_scan) {
   CollectionBackend *backend = app_->collection_backend().get();
   // Invoke GetAllSongs on the backend's own thread via queued connection
-  QMetaObject::invokeMethod(backend, [this, backend]() {
+  QMetaObject::invokeMethod(backend, [this, backend, force_scan]() {
     SongList songs = backend->GetAllSongs();
-    qLog(Debug) << "GalaxyMapView::fetchSongsFromBackend: got" << songs.size() << "songs";
+    qLog(Info) << "GalaxyMapView::fetchSongsFromBackend: got" << songs.size() << "songs";
     // Deliver results to the main thread
-    QMetaObject::invokeMethod(this, [this, songs]() {
+    QMetaObject::invokeMethod(this, [this, songs, force_scan]() {
       all_songs_ = songs;
-      buildStars(songs);
+      qLog(Info) << "GalaxyMapView: Building stars for" << songs.size() << "songs";
+      buildStars(songs, force_scan);
     }, Qt::QueuedConnection);
   }, Qt::QueuedConnection);
 }
 
-void GalaxyMapView::buildStars(const SongList &songs) {
-  stars_.clear();
-  album_art_cache_.clear();
-  album_art_thumb_cache_.clear();
-  album_art_loading_.clear();
-  loader_id_to_album_key_.clear();
-  update();
+void GalaxyMapView::DeepEmbeddings(bool force_scan) {
+  QMetaObject::invokeMethod(this, [this, force_scan]() {
+      // Logic:
+      // 1. If force_scan is true, always start.
+      // 2. If already scanning, DON'T start again.
+      // 3. If we've already done ONE scan this session, DON'T auto-restart (unless force_scan).
+      if ((deep_embedding_started_ || deep_embedding_scan_once_) && !force_scan) return;
+      
+      deep_embedding_started_ = true;
+      // Clear flag if we are starting a manual force_scan
+      if (force_scan) deep_embedding_scan_once_ = false;
 
+      if (deep_embedding_process_) {
+          deep_embedding_process_->kill();
+          deep_embedding_process_->waitForFinished(500);
+          delete deep_embedding_process_;
+      }
+      deep_embedding_process_ = new QProcess(this);
+      QString music_dir = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+      QString script_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/analyze_library.py");
+      
+      QString python_path = QStringLiteral("python3");
+      if (QFile::exists(QStringLiteral("/home/jchen/Documents/Projects/strawberry/build/.venv/bin/python3"))) {
+          python_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/build/.venv/bin/python3");
+      }
+      deep_embedding_process_->setProgram(python_path);
+      QStringList args = {script_path, QStringLiteral("--dir"), music_dir};
+      if (force_scan) args << QStringLiteral("--force");
+      deep_embedding_process_->setArguments(args);
+      
+      connect(deep_embedding_process_, &QProcess::readyReadStandardOutput, this, [this]() {
+          while (deep_embedding_process_->canReadLine()) {
+              QByteArray line = deep_embedding_process_->readLine().trimmed();
+              if (line.isEmpty()) continue;
+              
+              QJsonDocument doc = QJsonDocument::fromJson(line);
+              if (doc.isObject()) {
+                  QJsonObject obj = doc.object();
+                  if (obj.contains(QStringLiteral("progress"))) {
+                      deep_embedding_progress_ = obj.value(QStringLiteral("progress")).toDouble();
+                      deep_embedding_status_ = obj.value(QStringLiteral("status")).toString();
+                      update();
+                  }
+              }
+          }
+      });
+
+      connect(deep_embedding_process_, &QProcess::readyReadStandardError, this, [this]() {
+          qWarning() << "PYTHON ERROR:" << deep_embedding_process_->readAllStandardError();
+      });
+      
+      connect(deep_embedding_process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int, QProcess::ExitStatus) {
+          deep_embedding_started_ = false;
+          deep_embedding_scan_once_ = true; // Mark as done for this map session
+          deep_embedding_progress_ = 1.0f;
+          deep_embedding_status_ = tr("Scan finished");
+          
+          if (live_reveal_timer_) {
+              live_reveal_timer_->stop();
+          }
+
+          // Hide progress bar after 3 seconds
+          QTimer::singleShot(3000, this, [this]() {
+            if (!deep_embedding_started_) {
+              deep_embedding_progress_ = -1.0f;
+              update();
+            }
+          });
+
+          // Final database fetch WITHOUT triggering a restart
+          fetchSongsFromBackend(false);
+          update();
+      });
+      
+      deep_embedding_progress_ = 0.0f;
+      deep_embedding_process_->start();
+
+      if (!live_reveal_timer_) {
+          live_reveal_timer_ = new QTimer(this);
+          connect(live_reveal_timer_, &QTimer::timeout, this, [this]() { fetchSongsFromBackend(false); });
+      }
+      live_reveal_timer_->start(5000);
+  }, Qt::QueuedConnection);
+}
+
+void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
   // Version sentinel — clear stale cache if math changed
-  const int kVibeVersion = 8;
+  const int kVibeVersion = 13;
   {
     QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
     if (vc.value(u"__version"_s).toInt() != kVibeVersion) {
@@ -381,10 +507,15 @@ void GalaxyMapView::buildStars(const SongList &songs) {
     double stdColor = std::sqrt(varColor);
     double saturation = std::clamp(stdColor * 2.5, 0.0, 1.0);
 
-    QColor tc; tc.setRgbF(normR, normG, normB);
+    QColor tc; tc.setRgbF(std::clamp(normR, 0.0, 1.0), std::clamp(normG, 0.0, 1.0), std::clamp(normB, 0.0, 1.0));
     if (!tc.isValid()) tc = QColor(100, 150, 255);
     float h, s, v; tc.getHsvF(&h, &s, &v);
-    s = static_cast<float>(saturation);
+    
+    // Defensive clamping for setHsvF
+    h = std::isnan(h) ? 0.0f : std::clamp(h, 0.0f, 1.0f);
+    s = std::isnan(static_cast<float>(saturation)) ? 0.0f : std::clamp(static_cast<float>(saturation), 0.0f, 1.0f);
+    v = std::isnan(v) ? 0.8f : std::clamp(v, 0.0f, 1.0f);
+    
     tc.setHsvF(h, s, v);
     col = QVector3D(tc.redF(), tc.greenF(), tc.blueF());
 
@@ -422,45 +553,97 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   s.endGroup();
 
   if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
-      static bool deep_embedding_script_started = false;
-      if (!deep_embedding_script_started) {
-          deep_embedding_script_started = true;
-          QString music_dir = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
-          QString script_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/analyze_library.py");
-          QProcess::startDetached(QStringLiteral("python3"), {script_path, QStringLiteral("--dir"), music_dir});
-      }
+      DeepEmbeddings(force_scan);
   }
 
   auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds, processMoodMath, backend_type]() {
-    struct SongEntry { QVector2D pos; QVector3D col; float bpm; };
+    struct SongEntry { QVector2D pos; QVector3D col; float bpm; QString genre; };
     QVector<SongEntry> entries;
     entries.reserve(songs.size());
     QRandomGenerator bg_rng(0xDEADBEEF);
     QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
 
-    QHash<QString, QPair<QVector2D, QVector3D>> db_embeddings;
+    struct DbEntry { QVector2D pos; QVector3D col; QString genre; };
+    QHash<QString, DbEntry> db_embeddings;
     if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
       QString db_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/strawberry/strawberry/galaxy_embeddings.db");
       if (QFile::exists(db_path)) {
+        QString connection_name = QStringLiteral("embeddings_db_") + QString::number(bg_rng.generate());
         {
-          QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("embeddings_db"));
+          QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection_name);
           db.setDatabaseName(db_path);
           if (db.open()) {
             QSqlQuery q(db);
-            q.exec(QStringLiteral("SELECT path, x, y, vibrancy FROM embeddings WHERE x IS NOT NULL"));
-            while (q.next()) {
-              QString path = q.value(0).toString();
-              float x = q.value(1).toFloat();
-              float y = q.value(2).toFloat();
-              float vib = q.value(3).toFloat();
-              
-              float pb = std::clamp(vib / 2.0f, 0.0f, 1.0f);
-              QVector3D col((1-pb)*0.8f+0.2f, 0.4f, pb*0.8f+0.2f);
-              db_embeddings[path] = {QVector2D(x, y), col};
+            if (!q.exec(QStringLiteral("SELECT path, x, y, vibrancy, virtual_genre, confidence_score FROM embeddings"))) {
+              q.exec(QStringLiteral("SELECT path, x, y, vibrancy, virtual_genre FROM embeddings"));
             }
+            int count = 0;
+            while (q.next()) {
+              count++;
+              QString path = q.value(0).toString();
+              float vib = q.value(3).toFloat();
+              QString v_genre = q.value(4).toString();
+              float conf = q.record().indexOf(u"confidence_score"_s) >= 0 ? q.value(5).toFloat() : 1.0f;
+
+              if (std::isnan(vib)) vib = 0.0f;
+              if (std::isnan(conf)) conf = 0.0f;
+              
+              int hue = 0;
+              if      (v_genre.contains(u"Aggressive"_s)) hue = 0;   // Crimson
+              else if (v_genre.contains(u"Metal"_s))      hue = 12;  // Rust
+              else if (v_genre.contains(u"Rock"_s))       hue = 32;  // Amber
+              else if (v_genre.contains(u"Punk"_s))       hue = 18;  // Blood Orange
+              else if (v_genre.contains(u"Hip-Hop"_s))    hue = 58;  // Gold
+              else if (v_genre.contains(u"Soul"_s))       hue = 345; // Raspberry
+              else if (v_genre.contains(u"Disco"_s))      hue = 310; // Magenta
+              else if (v_genre.contains(u"Reggae"_s))     hue = 120; // Grass Green
+              else if (v_genre.contains(u"DnB"_s))        hue = 100; // Acid Green
+              else if (v_genre.contains(u"Hardstyle"_s)) hue = 5;   // Bright Fire Red
+              else if (v_genre.contains(u"Techno"_s))     hue = 165; // Emerald
+              else if (v_genre.contains(u"Electronic"_s)) hue = 195; // Cyan
+              else if (v_genre.contains(u"Synthwave"_s))  hue = 305; // Neon Purple
+              else if (v_genre.contains(u"Ambient"_s))    hue = 215; // Cobalt
+              else if (v_genre.contains(u"Cinematic"_s))  hue = 200; // Sky Blue
+              else if (v_genre.contains(u"Classical"_s))  hue = 265; // Amethyst
+              else if (v_genre.contains(u"Jazz"_s))       hue = 295; // Deep Lavender 
+              else if (v_genre.contains(u"Pop"_s))        hue = 330; // Rose
+              else if (v_genre.contains(u"Acoustic"_s))   hue = 45;  // Peach
+              else if (v_genre.contains(u"Folk"_s))       hue = 38;  // Earthy Orange
+              else if (v_genre.contains(u"Lo-Fi"_s))      hue = 280; // Muted Violet
+              else if (v_genre.contains(u"Blues"_s))      hue = 230; // Deep Sky Blue 
+              else if (v_genre.contains(u"Industrial"_s)) hue = 180; // Cold Teal
+              else hue = static_cast<int>(qHash(v_genre) % 360);
+
+              // Low confidence or "Unclassified" -> Muted / Grey
+              int sat = std::max(160, std::min(255, 160 + static_cast<int>(vib * 100)));
+              int val = std::max(220, std::min(255, 200 + static_cast<int>(vib * 120)));
+
+              if (v_genre == u"Unclassified"_s) {
+                sat = 40; // Very desaturated
+                val = 150; // Dimmed
+                hue = 0; 
+              }
+
+              QColor tc;
+              int safe_hue = ((hue % 360) + 360) % 360;
+              tc.setHsv(safe_hue, std::clamp(sat, 0, 255), std::clamp(val, 0, 255));
+              
+              QVector3D col(tc.redF(), tc.greenF(), tc.blueF());
+              if (q.value(1).isNull()) {
+                float fx = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
+                float fy = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
+                db_embeddings[path] = {QVector2D(fx, fy), col, v_genre};
+              } else {
+                float x = q.value(1).toFloat();
+                float y = q.value(2).toFloat();
+                db_embeddings[path] = {QVector2D(x, y), col, v_genre};
+              }
+            }
+            qLog(Info) << "GalaxyMapView: Loaded" << count << "embeddings from DB";
+            db.close();
           }
         }
-        QSqlDatabase::removeDatabase(QStringLiteral("embeddings_db"));
+        QSqlDatabase::removeDatabase(connection_name);
       }
     }
 
@@ -469,7 +652,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       const RawEntry &re = raw[i];
 
       if (!song.is_valid() || song.unavailable()) {
-        entries.append({QVector2D(0,0), QVector3D(0.5f,0.5f,0.5f), 120.0f});
+        entries.append({QVector2D(0,0), QVector3D(0.5f,0.5f,0.5f), 120.0f, u"Unknown"_s});
         continue;
       }
 
@@ -479,20 +662,20 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
         QString local_path = song.url().toLocalFile();
         if (db_embeddings.contains(local_path)) {
-          QPair<QVector2D, QVector3D> emb = db_embeddings.value(local_path);
-          entries.append({emb.first, emb.second, bpm});
+          DbEntry emb = db_embeddings.value(local_path);
+          entries.append({emb.pos, emb.col, bpm, emb.genre});
           continue;
         } else {
           // Fallback if not processed yet or not local
           float x = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
           float y = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
-          entries.append({QVector2D(x, y), QVector3D(0.5f,0.5f,0.5f), bpm});
+          entries.append({QVector2D(x, y), QVector3D(0.5f,0.5f,0.5f), bpm, u"Unknown"_s});
           continue;
         }
       }
 
       if (re.from_cache) {
-        entries.append({QVector2D(re.cached_x, re.cached_y), QVector3D(re.cached_r, re.cached_g, re.cached_b), bpm});
+        entries.append({QVector2D(re.cached_x, re.cached_y), QVector3D(re.cached_r, re.cached_g, re.cached_b), bpm, u"Unknown"_s});
         continue;
       }
 
@@ -518,11 +701,15 @@ void GalaxyMapView::buildStars(const SongList &songs) {
         float pb = std::clamp((bpm-60.0f)/120.0f, 0.0f, 1.0f);
         col = QVector3D((1-pb)*0.8f+0.2f, 0.4f, pb*0.8f+0.2f);
       }
-      entries.append({QVector2D(x, mood_y), col, bpm});
+      entries.append({QVector2D(x, mood_y), col, bpm, u"Unknown"_s});
     }
 
     // ── PHASE 2 (main thread): build star objects immediately ─────────────────
     QMetaObject::invokeMethod(this, [this, songs, entries, jitter_seeds]() {
+      stars_.clear();
+      selected_star_ = -1;
+      hovered_star_ = -1;
+
       QRandomGenerator rng(0xDEADBEEF);
 
       QVector<float> all_x, all_y;
@@ -560,7 +747,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
 
         GalaxyStar star;
         star.position      = QVector2D(x,y);
-        star.color         = QVector3D(col.redF(), col.greenF(), col.blueF());
+        star.color         = entries[i].col;
         star.base_size     = 3.0f + std::min(1.0f, std::max(0.0f, song.rating()))*2.0f;
         star.twinkle_phase = static_cast<float>(rng.generateDouble()*2.0*M_PI);
         star.title         = song.title();
@@ -570,6 +757,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
         star.bpm           = bpm;
         star.song_id       = song.id();
         star.all_songs_index = i;
+        star.genre         = entries[i].genre;
         star.album_key     = song.AlbumKey();
         if (star.album_key.isEmpty()) star.album_key = song.artist() + u"|" + song.album();
         if (!song.art_manual().isEmpty())         star.art_url = song.art_manual();
@@ -608,7 +796,7 @@ void GalaxyMapView::buildStars(const SongList &songs) {
       for (int i = 0; i < stars_.size(); ++i) {
         const QUrl url = stars_[i].url;
         if (!url.isLocalFile()) continue;
-        QtConcurrent::run([this, i, url]() {
+        (void)QtConcurrent::run([this, i, url]() {
           AubioBPMResult res = getAubioBPMData(url);
           if (res.bpm > 0.0f) {
             QMetaObject::invokeMethod(this, [this, i, res]() {
@@ -702,15 +890,8 @@ void GalaxyMapView::onAlbumArtLoaded(const QString &album_key, const QPixmap &pi
   if (pixmap.isNull()) return;
 
   album_art_cache_[album_key] = pixmap;
-  album_art_thumb_cache_[album_key] = pixmap.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+  album_art_thumb_cache_[album_key] = pixmap.scaled(64, 64, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
 
-  // Update stars count and dominant colors
-  QVector3D dc = dominantColor(pixmap);
-  for (int i = 0; i < stars_.size(); ++i) {
-    if (stars_[i].album_key == album_key) {
-      stars_[i].color = dc;
-    }
-  }
   update();
 }
 
@@ -770,6 +951,23 @@ void GalaxyMapView::paintEvent(QPaintEvent *) {
     drawConstellationView(p);
   } else {
     drawPlanetView(p);
+  }
+  
+  // Progress Overlay
+  if (deep_embedding_progress_ >= 0.0f) {
+      int bar_w = 300;
+      int bar_h = 24;
+      int cx = width() / 2;
+      int cy = height() - 60;
+      p.fillRect(cx - bar_w/2, cy, bar_w, bar_h, QColor(0, 0, 0, 150));
+      p.fillRect(cx - bar_w/2, cy, static_cast<int>(bar_w * deep_embedding_progress_), bar_h, QColor(80, 150, 255, 200));
+      p.setPen(Qt::white);
+      p.drawRect(cx - bar_w/2, cy, bar_w, bar_h);
+      
+      p.drawText(cx - bar_w/2, cy + bar_h + 16, deep_embedding_status_);
+      
+      QString prog_text = QStringLiteral("Scanning Galaxy... %1%").arg(static_cast<int>(deep_embedding_progress_ * 100));
+      p.drawText(QRect(cx - bar_w/2, cy, bar_w, bar_h), Qt::AlignCenter, prog_text);
   }
 
   // HUD: view mode and star count
@@ -848,6 +1046,9 @@ void GalaxyMapView::drawStarView(QPainter &p) {
 
     if (sp.x() < -20 || sp.x() > width() + 20 || sp.y() < -20 || sp.y() > height() + 20)
       continue;
+      
+    // Preload art
+    loadStarArt(i);
 
     float twinkle = 0.7f + 0.3f * sinf(anim_time_ * 2.5f + star.twinkle_phase);
     // Size: BPM-driven — fast songs are bigger, slow songs are smaller
@@ -958,23 +1159,29 @@ void GalaxyMapView::drawConstellationView(QPainter &p) {
 
       // Name + artist pill below the star dot
       QFont label_font(u"Inter"_s, 9, QFont::Medium);
+      QFont genre_font(u"Inter"_s, 8, QFont::Normal);
       p.setFont(label_font);
-      QFontMetrics fm(label_font);
+      QFontMetrics fm(label_font), fmG(genre_font);
       QString lbl = star.title.isEmpty() ? u"?"_s : star.title;
       QString sub = star.artist;
-      int tw = std::max(fm.horizontalAdvance(lbl), fm.horizontalAdvance(sub)) + 16;
+      QString gen = star.genre.isEmpty() ? u"Unknown"_s : star.genre;
 
-      QRectF pill(sp.x() - tw / 2.0, sp.y() + dot_r + 5, tw, 34);
+      int tw = std::max({fm.horizontalAdvance(lbl), fm.horizontalAdvance(sub), fmG.horizontalAdvance(gen)}) + 20;
+
+      QRectF pill(sp.x() - tw / 2.0, sp.y() + dot_r + 5, tw, 50);
       p.setBrush(QColor(5, 5, 20, 210));
       p.setPen(QPen(QColor(star_col.red(), star_col.green(), star_col.blue(), 120), 1.0));
       p.drawRoundedRect(pill, 6, 6);
 
       p.setPen(Qt::white);
-      p.setFont(QFont(u"Inter"_s, 9, QFont::Bold));
+      p.setFont(QFont(u"Inter"_s, 10, QFont::Bold));
       p.drawText(pill.adjusted(0, 4, 0, 0), Qt::AlignTop | Qt::AlignHCenter, lbl);
       p.setPen(QColor(180, 180, 210));
-      p.setFont(QFont(u"Inter"_s, 8));
+      p.setFont(QFont(u"Inter"_s, 9));
       p.drawText(pill.adjusted(0, 18, 0, 0), Qt::AlignTop | Qt::AlignHCenter, sub);
+      p.setPen(QColor(150, 150, 180));
+      p.setFont(genre_font);
+      p.drawText(pill.adjusted(0, 33, 0, 0), Qt::AlignTop | Qt::AlignHCenter, gen);
     }
   }
 
@@ -1073,12 +1280,14 @@ void GalaxyMapView::drawPlanetView(QPainter &p) {
       // Background pill
       QString lbl = star.title.isEmpty() ? u"Unknown"_s : star.title;
       QString lblSub = star.artist;
+      QString lblGenre = star.genre.isEmpty() ? u"Unknown"_s : star.genre;
 
       QFont titleFont(u"Inter"_s, 11, QFont::Bold);
       QFont subFont(u"Inter"_s, 9);
-      QFontMetrics fm(titleFont), fm2(subFont);
-      int textW = std::max(fm.horizontalAdvance(lbl), fm2.horizontalAdvance(lblSub)) + 20;
-      int textH = 42;
+      QFont genreFont(u"Inter"_s, 8, QFont::Normal);
+      QFontMetrics fm(titleFont), fm2(subFont), fmG(genreFont);
+      int textW = std::max({fm.horizontalAdvance(lbl), fm2.horizontalAdvance(lblSub), fmG.horizontalAdvance(lblGenre)}) + 20;
+      int textH = 58;
 
       QRectF pill(sp.x() - textW / 2.0, labelY, textW, textH);
       p.setBrush(QColor(10, 10, 30, 200));
@@ -1091,6 +1300,9 @@ void GalaxyMapView::drawPlanetView(QPainter &p) {
       p.setPen(QColor(180, 180, 210));
       p.setFont(subFont);
       p.drawText(pill.adjusted(0, 22, 0, 0), Qt::AlignTop | Qt::AlignHCenter, lblSub);
+      p.setPen(QColor(150, 150, 180));
+      p.setFont(genreFont);
+      p.drawText(pill.adjusted(0, 38, 0, 0), Qt::AlignTop | Qt::AlignHCenter, lblGenre);
       
       if (is_selected) {
         // (URL intentionally omitted — too long)
@@ -1113,58 +1325,30 @@ void GalaxyMapView::mousePressEvent(QMouseEvent *event) {
   if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) {
     is_dragging_ = true;
     last_mouse_pos_ = event->position();
+    press_start_pos_ = event->position();
     velocity_ = QVector2D(0, 0);
-
-    // Only LeftButton interacts with stars
-    if (event->button() == Qt::LeftButton) {
-      QVector2D worldClick = screenToWorld(event->position());
-      float bestDist = 9999.0f;
-      int bestIdx = -1;
-
-      for (int i = 0; i < stars_.size(); ++i) {
-        // Calculate hit radius based on visual size in screen space
-        float visualRadius;
-        if (zoom_ < kZoomStarView) {
-          visualRadius = std::max(6.0f, stars_[i].base_size * zoom_ * 80.0f);
-        } else if (zoom_ < kZoomConstellation) {
-          visualRadius = std::max(12.0f, zoom_ * 30.0f);
-        } else {
-          float artSize = std::max(48.0f, std::min(zoom_ * 150.0f, 256.0f));
-          visualRadius = artSize * 0.5f + 10.0f;
-        }
-
-        float hitRadiusWorld = visualRadius / zoom_;
-        float dist = (stars_[i].position - worldClick).length();
-        if (dist < hitRadiusWorld && dist < bestDist) {
-          bestDist = dist;
-          bestIdx = i;
-        }
-      }
-
-      if (bestIdx >= 0) {
-        // Bring to front
-        GalaxyStar clickedStar = stars_.takeAt(bestIdx);
-        stars_.append(clickedStar);
-        selected_star_ = stars_.size() - 1;
-        select_pulse_ = 0.0f;
-        update();
-      }
-    }
   }
 }
 
 void GalaxyMapView::mouseDoubleClickEvent(QMouseEvent *event) {
   if (event->button() == Qt::LeftButton) {
-    QVector2D worldClick = screenToWorld(event->position());
+    QPointF clickPos = event->position();
     int bestIdx = -1;
-    float bestDist = 9999.0f;
+    float bestDistSq = 999999.0f;
 
     for (int i = 0; i < stars_.size(); ++i) {
-      float visualRadius = (zoom_ < kZoomStarView) ? 15.0f : 40.0f; // Simplified for dblclick
-      float hitRadiusWorld = visualRadius / zoom_;
-      float dist = (stars_[i].position - worldClick).length();
-      if (dist < hitRadiusWorld && dist < bestDist) {
-        bestDist = dist;
+      float vRadius;
+      if (zoom_ < kZoomStarView) vRadius = 15.0f;
+      else if (zoom_ < kZoomConstellation) vRadius = 30.0f;
+      else vRadius = 50.0f;
+
+      QPointF starScreen = worldToScreen(stars_[i].position);
+      float dx = starScreen.x() - clickPos.x();
+      float dy = starScreen.y() - clickPos.y();
+      float distSq = dx*dx + dy*dy;
+
+      if (distSq < (vRadius * vRadius) && distSq < bestDistSq) {
+        bestDistSq = distSq;
         bestIdx = i;
       }
     }
@@ -1195,16 +1379,28 @@ void GalaxyMapView::mouseMoveEvent(QMouseEvent *event) {
 
   // Hover detection (only if not dragging)
   if (!is_dragging_) {
-    QVector2D worldMouse = screenToWorld(event->position());
+    QPointF mousePos = event->position();
     int prev = hovered_star_;
     hovered_star_ = -1;
-    float bestDist = 9999.0f;
+    float bestDistSq = 999999.0f;
     for (int i = 0; i < stars_.size(); ++i) {
-      float vRadius = (zoom_ < kZoomStarView) ? 10.0f : 30.0f;
-      float hitRadiusWorld = vRadius / zoom_;
-      float dist = (stars_[i].position - worldMouse).length();
-      if (dist < hitRadiusWorld && dist < bestDist) {
-        bestDist = dist;
+      float vRadius;
+      if (zoom_ < kZoomStarView) {
+        vRadius = std::max(10.0f, stars_[i].base_size * zoom_ * 100.0f);
+      } else if (zoom_ < kZoomConstellation) {
+        vRadius = std::max(20.0f, zoom_ * 40.0f);
+      } else {
+        float artSize = std::max(48.0f, std::min(zoom_ * 150.0f, 256.0f));
+        vRadius = artSize * 0.5f + 25.0f;
+      }
+
+      QPointF starScreen = worldToScreen(stars_[i].position);
+      float dx = starScreen.x() - mousePos.x();
+      float dy = starScreen.y() - mousePos.y();
+      float distSq = dx*dx + dy*dy;
+
+      if (distSq < (vRadius * vRadius) && distSq < bestDistSq) {
+        bestDistSq = distSq;
         hovered_star_ = i;
       }
     }
@@ -1218,5 +1414,49 @@ void GalaxyMapView::mouseMoveEvent(QMouseEvent *event) {
 void GalaxyMapView::mouseReleaseEvent(QMouseEvent *event) {
   if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) {
     is_dragging_ = false;
+
+    // Selection logic only if it was a clean click (hardly any movement)
+    if (event->button() == Qt::LeftButton) {
+      float moveDist = QLineF(press_start_pos_, event->position()).length();
+      if (moveDist < 5.0f) {
+        QPointF clickPos = event->position();
+        float bestDistSq = 999999.0f;
+        int bestIdx = -1;
+
+        for (int i = 0; i < stars_.size(); ++i) {
+          float visualRadius;
+          if (zoom_ < kZoomStarView) {
+            visualRadius = std::max(10.0f, stars_[i].base_size * zoom_ * 100.0f);
+          } else if (zoom_ < kZoomConstellation) {
+            visualRadius = std::max(20.0f, zoom_ * 40.0f);
+          } else {
+            float artSize = std::max(48.0f, std::min(zoom_ * 150.0f, 256.0f));
+            visualRadius = artSize * 0.5f + 25.0f;
+          }
+
+          QPointF starScreen = worldToScreen(stars_[i].position);
+          float dx = starScreen.x() - clickPos.x();
+          float dy = starScreen.y() - clickPos.y();
+          float distSq = dx*dx + dy*dy;
+          
+          if (distSq < (visualRadius * visualRadius) && distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestIdx = i;
+          }
+        }
+
+        if (bestIdx >= 0) {
+          // Select and bring to front
+          GalaxyStar clickedStar = stars_.takeAt(bestIdx);
+          stars_.append(clickedStar);
+          selected_star_ = stars_.size() - 1;
+          select_pulse_ = 0.0f;
+        } else {
+          // Clicked empty space — deselect
+          selected_star_ = -1;
+        }
+        update();
+      }
+    }
   }
 }

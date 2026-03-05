@@ -22,8 +22,6 @@
 #ifndef APPEARANCESETTINGSPAGE_H
 #define APPEARANCESETTINGSPAGE_H
 
-#include "config.h"
-
 #include <QObject>
 #include <QString>
 #include <QColor>
@@ -54,6 +52,10 @@ class AppearanceSettingsPage : public SettingsPage {
   void TabBarSelectBGColor();
   void PlaylistPlayingSongColorSystem(bool checked);
   void PlaylistPlayingSongSelectColor();
+  void ClearGalaxyDatabase();
+
+ Q_SIGNALS:
+  void GalaxyDatabaseCleared();
 
  private:
   // Set the widget's background to new_color

@@ -19,10 +19,6 @@
  *
  */
 
-#include "config.h"
-
-#include <utility>
-
 #include <QApplication>
 #include <QWidget>
 #include <QStyleFactory>
@@ -41,6 +37,9 @@
 #include <QComboBox>
 #include <QSpinBox>
 #include <QSettings>
+#include <QStandardPaths>
+#include <QFile>
+#include <QMessageBox>
 
 #include "appearancesettingspage.h"
 #include "constants/appearancesettings.h"
@@ -100,6 +99,8 @@ AppearanceSettingsPage::AppearanceSettingsPage(SettingsDialog *dialog, QWidget *
 
   QObject::connect(ui_->select_playlist_playing_song_color, &QPushButton::pressed, this, &AppearanceSettingsPage::PlaylistPlayingSongSelectColor);
   QObject::connect(ui_->playlist_playing_song_color_system, &QRadioButton::toggled, this, &AppearanceSettingsPage::PlaylistPlayingSongColorSystem);
+
+  QObject::connect(ui_->button_clear_galaxy_db, &QPushButton::clicked, this, &AppearanceSettingsPage::ClearGalaxyDatabase);
 
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN32)
   ui_->checkbox_system_icons->hide();
@@ -351,4 +352,26 @@ void AppearanceSettingsPage::PlaylistPlayingSongSelectColor() {
 
   set_changed();
 
+}
+
+void AppearanceSettingsPage::ClearGalaxyDatabase() {
+  QString db_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/galaxy_embeddings.db"_s;
+  QString model_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/galaxy_umap_model.pkl"_s;
+  
+  bool db_cleared = true;
+  if (QFile::exists(db_path)) {
+    db_cleared = QFile::remove(db_path);
+  }
+  
+  bool model_cleared = true;
+  if (QFile::exists(model_path)) {
+    model_cleared = QFile::remove(model_path);
+  }
+  
+  if (db_cleared && model_cleared) {
+    QMessageBox::information(this, tr("Database Cleared"), tr("The Galaxy Map database has been cleared. It will be regenerated during the next scan."));
+    Q_EMIT GalaxyDatabaseCleared();
+  } else {
+    QMessageBox::warning(this, tr("Error"), tr("Failed to clear the Galaxy Map database. Ensure no processes are locking it."));
+  }
 }

@@ -151,6 +151,24 @@ if(CCACHE_EXECUTABLE)
   SET_PROPERTY(GLOBAL PROPERTY RULE_LAUNCH_LINK ${CCACHE_EXECUTABLE})
 endif()
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+if(Python3_FOUND)
+  message(STATUS "Python3 found: ${Python3_EXECUTABLE}")
+  set(HAVE_PYTHON ON)
+endif()
+
+if(Python3_Interpreter_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import torch, transformers, librosa, umap, joblib, tinytag"
+    RESULT_VARIABLE PYTHON_DEPS_CHECK
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if(NOT PYTHON_DEPS_CHECK EQUAL 0)
+    message(WARNING "Missing Python dependencies for Galaxy Map. Please run: pip install torch transformers librosa umap-learn joblib tinytag")
+  endif()
+endif()
+
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Backtrace)
@@ -1540,6 +1558,7 @@ endif()
 target_link_libraries(strawberry_lib PUBLIC
   ${CMAKE_THREAD_LIBS_INIT}
   $<$<BOOL:${HAVE_BACKTRACE}>:${Backtrace_LIBRARIES}>
+  $<$<BOOL:${HAVE_PYTHON}>:Python3::Python>
   PkgConfig::GLIB
   PkgConfig::GOBJECT
   PkgConfig::SQLITE
@@ -1578,6 +1597,10 @@ target_link_libraries(strawberry_lib PUBLIC
   $<$<BOOL:${MSVC}>:WindowsApp>
   KDAB::kdsingleapplication
 )
+
+if(HAVE_PYTHON)
+  target_include_directories(strawberry_lib SYSTEM PUBLIC ${Python3_INCLUDE_DIRS})
+endif()
 
 if(APPLE)
   target_link_libraries(strawberry_lib PUBLIC

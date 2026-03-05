@@ -585,20 +585,43 @@
      </layout>
     </widget>
    </item>
-   <item>
-    <spacer name="spacer_bottom">
-     <property name="orientation">
-      <enum>Qt::Orientation::Vertical</enum>
-     </property>
-     <property name="sizeHint" stdset="0">
-      <size>
-       <width>20</width>
-       <height>40</height>
-      </size>
-     </property>
-    </spacer>
-   </item>
-  </layout>
+    <item>
+     <widget class="QGroupBox" name="groupbox_galaxy_backend">
+      <property name="title">
+       <string>Galaxy Map Backend</string>
+      </property>
+      <layout class="QVBoxLayout" name="layout_galaxy_backend">
+       <item>
+        <widget class="QRadioButton" name="backend_basic_math">
+         <property name="text">
+          <string>Basic Energy Math (Fast, Built-in)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QRadioButton" name="backend_deep_embeddings">
+         <property name="text">
+          <string>Deep Audio Embeddings (Requires Python Sidecar)</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <spacer name="spacer_bottom">
+      <property name="orientation">
+       <enum>Qt::Orientation::Vertical</enum>
+      </property>
+      <property name="sizeHint" stdset="0">
+       <size>
+        <width>20</width>
+        <height>40</height>
+       </size>
+      </property>
+     </spacer>
+    </item>
+   </layout>
  </widget>
  <tabstops>
   <tabstop>tabbar_system_color</tabstop>

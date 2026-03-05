@@ -26,6 +26,14 @@
 #include <QSet>
 #include <QDebug>
 #include <QSettings>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QVariant>
+#include <QProcess>
+#include <QStandardPaths>
+
+#include "constants/appearancesettings.h"
+#include "core/settings.h"
 
 #include "core/application.h"
 #include "collection/collectionmodel.h"
@@ -408,12 +416,53 @@ void GalaxyMapView::buildStars(const SongList &songs) {
   }
 
   // ── PHASE 1 (background): coordinate math ──────────────────────────────
-  auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds, processMoodMath]() {
+  Settings s;
+  s.beginGroup(AppearanceSettings::kSettingsGroup);
+  AppearanceSettings::GalaxyBackendType backend_type = static_cast<AppearanceSettings::GalaxyBackendType>(s.value(AppearanceSettings::kGalaxyBackend, static_cast<int>(AppearanceSettings::GalaxyBackendType::BasicMath)).toInt());
+  s.endGroup();
+
+  if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
+      static bool deep_embedding_script_started = false;
+      if (!deep_embedding_script_started) {
+          deep_embedding_script_started = true;
+          QString music_dir = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+          QString script_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/analyze_library.py");
+          QProcess::startDetached(QStringLiteral("python3"), {script_path, QStringLiteral("--dir"), music_dir});
+      }
+  }
+
+  auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds, processMoodMath, backend_type]() {
     struct SongEntry { QVector2D pos; QVector3D col; float bpm; };
     QVector<SongEntry> entries;
     entries.reserve(songs.size());
     QRandomGenerator bg_rng(0xDEADBEEF);
     QSettings vibe_cache(u"Strawberry"_s, u"GalaxyVibeMap"_s);
+
+    QHash<QString, QPair<QVector2D, QVector3D>> db_embeddings;
+    if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
+      QString db_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/strawberry/strawberry/galaxy_embeddings.db");
+      if (QFile::exists(db_path)) {
+        {
+          QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("embeddings_db"));
+          db.setDatabaseName(db_path);
+          if (db.open()) {
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("SELECT path, x, y, vibrancy FROM embeddings WHERE x IS NOT NULL"));
+            while (q.next()) {
+              QString path = q.value(0).toString();
+              float x = q.value(1).toFloat();
+              float y = q.value(2).toFloat();
+              float vib = q.value(3).toFloat();
+              
+              float pb = std::clamp(vib / 2.0f, 0.0f, 1.0f);
+              QVector3D col((1-pb)*0.8f+0.2f, 0.4f, pb*0.8f+0.2f);
+              db_embeddings[path] = {QVector2D(x, y), col};
+            }
+          }
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("embeddings_db"));
+      }
+    }
 
     for (int i = 0; i < songs.size(); ++i) {
       const Song &song = songs[i];
@@ -426,6 +475,21 @@ void GalaxyMapView::buildStars(const SongList &songs) {
 
       float bpm = song.bpm() > 0.0f ? song.bpm() : 120.0f;
       QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
+      
+      if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
+        QString local_path = song.url().toLocalFile();
+        if (db_embeddings.contains(local_path)) {
+          QPair<QVector2D, QVector3D> emb = db_embeddings.value(local_path);
+          entries.append({emb.first, emb.second, bpm});
+          continue;
+        } else {
+          // Fallback if not processed yet or not local
+          float x = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
+          float y = (static_cast<float>(bg_rng.generateDouble()) - 0.5f) * 1500.0f;
+          entries.append({QVector2D(x, y), QVector3D(0.5f,0.5f,0.5f), bpm});
+          continue;
+        }
+      }
 
       if (re.from_cache) {
         entries.append({QVector2D(re.cached_x, re.cached_y), QVector3D(re.cached_r, re.cached_g, re.cached_b), bpm});

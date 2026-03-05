@@ -187,6 +187,13 @@ void AppearanceSettingsPage::Load() {
   UpdateColorSelectorColor(ui_->select_playlist_playing_song_color, current_playlist_playing_song_color_);
   PlaylistPlayingSongColorSystem(ui_->playlist_playing_song_color_system->isChecked());
 
+  GalaxyBackendType galaxy_backend = static_cast<GalaxyBackendType>(s.value(kGalaxyBackend, static_cast<int>(GalaxyBackendType::BasicMath)).toInt());
+  if (galaxy_backend == GalaxyBackendType::DeepEmbeddings) {
+    ui_->backend_deep_embeddings->setChecked(true);
+  } else {
+    ui_->backend_basic_math->setChecked(true);
+  }
+
   s.endGroup();
 
   Init(ui_->layout_appearancesettingspage->parentWidget());
@@ -258,6 +265,12 @@ void AppearanceSettingsPage::Save() {
   }
   else {
     s.setValue(kPlaylistPlayingSongColor, current_playlist_playing_song_color_);
+  }
+
+  if (ui_->backend_deep_embeddings->isChecked()) {
+    s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::DeepEmbeddings));
+  } else {
+    s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::BasicMath));
   }
 
   s.endGroup();

@@ -1,0 +1,7 @@
+tensorflow
+essentia
+essentia-tensorflow
+numpy
+umap-learn
+scikit-learn
+joblib

@@ -53,6 +53,12 @@ constexpr char kIconSizeLeftPanelButtons[] = "icon_size_left_panel_buttons";
 constexpr char kIconSizeConfigureButtons[] = "icon_size_configure_buttons";
 
 constexpr char kPlaylistPlayingSongColor[] = "playlist_playing_song_color";
+constexpr char kGalaxyBackend[] = "galaxy_backend";
+
+enum class GalaxyBackendType {
+  BasicMath,
+  DeepEmbeddings
+};
 
 enum class BackgroundImageType {
   Default,

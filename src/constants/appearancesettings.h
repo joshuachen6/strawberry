@@ -57,7 +57,8 @@ constexpr char kGalaxyBackend[] = "galaxy_backend";
 
 enum class GalaxyBackendType {
   BasicMath,
-  DeepEmbeddings
+  DeepEmbeddings,
+  LyricsEmotion
 };
 
 enum class BackgroundImageType {

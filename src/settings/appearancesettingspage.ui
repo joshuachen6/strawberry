@@ -606,6 +606,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QRadioButton" name="backend_lyrics_emotion">
+         <property name="text">
+          <string>Lyrics Emotion Analysis (Requires Python Sidecar)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPushButton" name="button_clear_galaxy_db">
          <property name="text">
           <string>Clear Database / Regenerate</string>

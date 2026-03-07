@@ -21,6 +21,7 @@
 
 class Application;
 class AlbumCoverLoaderResult;
+class LyricsFetcher;
 
 // A single star in the galaxy map
 struct GalaxyStar {
@@ -70,10 +71,10 @@ class GalaxyMapView : public QWidget {
   void Init();
   // Reset the scan flag
   void ResetScanFlag();
-
+  void ReloadSettings();
   // Zoom thresholds (world-space pixels per unit)
   static constexpr float kZoomStarView      = 0.18f;   // < zoomed out
-  static constexpr float kZoomConstellation = 3.5f;    // mid zoom
+  static constexpr float kZoomConstellation = 5.5f;    // mid zoom
   // above kZoomConstellation => planet view
 
  protected:
@@ -92,14 +93,19 @@ class GalaxyMapView : public QWidget {
   void onSongsChanged(const SongList &songs);
   void onAlbumArtLoaded(const QString &album_key, const QPixmap &pixmap);
   void onAlbumCoverLoaded(quint64 id, const AlbumCoverLoaderResult &result);
+  void onLyricsFetched(const quint64 request_id, const QString &provider, const QString &lyrics);
 
  private:
   void fetchSongsFromBackend(bool force_scan = false);
   void DeepEmbeddings(bool force_scan = false);
+  void LyricsEmotion(bool force_scan = false);
+  bool CheckPythonEnvironment();
   void buildPlaceholderStars();
   void tryLoadFromModel();
+  void UpdateGenreLabels();
   void buildStars(const SongList &songs, bool force_scan = false);
   void loadStarArt(int idx);
+  void fetchMissingLyrics();
   void drawStarView(QPainter &p);
   void drawConstellationView(QPainter &p);
   void drawPlanetView(QPainter &p);
@@ -142,6 +148,9 @@ class GalaxyMapView : public QWidget {
   QTimer *live_reveal_timer_;
   bool deep_embedding_started_;
   bool deep_embedding_scan_once_;
+
+  LyricsFetcher *lyrics_fetcher_;
+  QMap<quint64, int> lyrics_request_to_song_index_;
 };
 
 #endif // GALAXYMAPVIEW_H

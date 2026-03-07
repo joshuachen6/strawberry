@@ -191,6 +191,8 @@ void AppearanceSettingsPage::Load() {
   GalaxyBackendType galaxy_backend = static_cast<GalaxyBackendType>(s.value(kGalaxyBackend, static_cast<int>(GalaxyBackendType::BasicMath)).toInt());
   if (galaxy_backend == GalaxyBackendType::DeepEmbeddings) {
     ui_->backend_deep_embeddings->setChecked(true);
+  } else if (galaxy_backend == GalaxyBackendType::LyricsEmotion) {
+    ui_->backend_lyrics_emotion->setChecked(true);
   } else {
     ui_->backend_basic_math->setChecked(true);
   }
@@ -270,6 +272,8 @@ void AppearanceSettingsPage::Save() {
 
   if (ui_->backend_deep_embeddings->isChecked()) {
     s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::DeepEmbeddings));
+  } else if (ui_->backend_lyrics_emotion->isChecked()) {
+    s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::LyricsEmotion));
   } else {
     s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::BasicMath));
   }
@@ -355,23 +359,26 @@ void AppearanceSettingsPage::PlaylistPlayingSongSelectColor() {
 }
 
 void AppearanceSettingsPage::ClearGalaxyDatabase() {
-  QString db_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/galaxy_embeddings.db"_s;
-  QString model_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/galaxy_umap_model.pkl"_s;
-  
-  bool db_cleared = true;
-  if (QFile::exists(db_path)) {
-    db_cleared = QFile::remove(db_path);
+  QString base_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/"_s;
+  QStringList files_to_remove = {
+    u"galaxy_embeddings.db"_s, u"galaxy_umap_model.pkl"_s,
+    u"galaxy_lyrics_embeddings.db"_s, u"galaxy_lyrics_umap_model.pkl"_s
+  };
+
+  bool all_cleared = true;
+  for (const QString &file : files_to_remove) {
+    QString full_path = base_path + file;
+    if (QFile::exists(full_path)) {
+      if (!QFile::remove(full_path)) {
+        all_cleared = false;
+      }
+    }
   }
-  
-  bool model_cleared = true;
-  if (QFile::exists(model_path)) {
-    model_cleared = QFile::remove(model_path);
-  }
-  
-  if (db_cleared && model_cleared) {
-    QMessageBox::information(this, tr("Database Cleared"), tr("The Galaxy Map database has been cleared. It will be regenerated during the next scan."));
+
+  if (all_cleared) {
+    QMessageBox::information(this, tr("Database Cleared"), tr("The Galaxy Map databases have been cleared. They will be regenerated during the next scan."));
     Q_EMIT GalaxyDatabaseCleared();
   } else {
-    QMessageBox::warning(this, tr("Error"), tr("Failed to clear the Galaxy Map database. Ensure no processes are locking it."));
+    QMessageBox::warning(this, tr("Error"), tr("Some database files could not be removed. They might be in use."));
   }
 }

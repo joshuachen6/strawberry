@@ -1,8 +1,12 @@
-tensorflow
-essentia
-essentia-tensorflow
 numpy
 umap-learn
-scikit-learn
 joblib
+scipy
+onnxruntime-gpu
+tokenizers
+huggingface_hub
+nvidia-cudnn-cu12
+vaderSentiment
 tinytag
+pysqlite3
+scikit-learn

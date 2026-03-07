@@ -1,5 +1,6 @@
 #include "galaxymapview.h"
 
+#include "lyrics/lyricsfetcher.h"
 #include <cmath>
 #include <algorithm>
 
@@ -37,6 +38,7 @@
 #include <QStandardPaths>
 #include <QFileSystemWatcher>
 #include <QDir>
+#include <QCryptographicHash>
 
 #include "constants/appearancesettings.h"
 #include "core/settings.h"
@@ -146,46 +148,16 @@ GalaxyMapView::GalaxyMapView(Application *app, QWidget *parent)
       deep_embedding_progress_(-1.0f),
       live_reveal_timer_(nullptr),
       deep_embedding_started_(false),
-      deep_embedding_scan_once_(false) {
+      deep_embedding_scan_once_(false),
+      lyrics_fetcher_(new LyricsFetcher(app->lyrics_providers(), this)) {
   setMouseTracking(true);
   setAttribute(Qt::WA_OpaquePaintEvent);
   setMinimumSize(200, 200);
 
-  // Initialize Genre Continents for Labels (Synced with analyze_library.py)
-  // Coordinates expanded 4x to +/- 4000 to prevent label overlap at high zoom
-  genre_continents_ = {
-      {u"Electronic"_s,      QVector2D(2000, 2000),   QColor(165, 255, 220)},
-      {u"DnB/Jungle"_s,      QVector2D(2500, 1500),   QColor(100, 255, 100)},
-      {u"Techno"_s,          QVector2D(3000, 1000),   QColor(0, 255, 170)},
-      {u"Synthwave/Retro"_s, QVector2D(4000, 3000),   QColor(255, 50, 255)},
-      {u"Hardstyle"_s,       QVector2D(3500, 500),    QColor(255, 50, 50)},
-      {u"Rock"_s,            QVector2D(-2000, 2000),  QColor(250, 180, 50)},
-      {u"Metal"_s,           QVector2D(-3000, 3000),  QColor(150, 80, 50)},
-      {u"Punk/Garage"_s,     QVector2D(-2500, 1500),  QColor(255, 80, 20)},
-      {u"Aggressive"_s,      QVector2D(-4000, 4000),  QColor(255, 0, 0)},
-      {u"Hip-Hop"_s,         QVector2D(2000, -2000),  QColor(255, 220, 50)},
-      {u"Soul/R&B"_s,        QVector2D(1500, -2500),  QColor(255, 50, 150)},
-      {u"Disco/Funk"_s,      QVector2D(2500, -1500),  QColor(255, 100, 255)},
-      {u"Reggae/Dub"_s,      QVector2D(1000, -3000),  QColor(50, 255, 50)},
-      {u"Acoustic"_s,        QVector2D(-2000, -2000), QColor(255, 200, 150)},
-      {u"Folk/Indie"_s,      QVector2D(-2500, -1500), QColor(200, 150, 100)},
-      {u"Lo-Fi/Study"_s,     QVector2D(-1500, -2500), QColor(180, 150, 255)},
-      {u"Jazz/Lounge"_s,     QVector2D(-1000, -3000), QColor(200, 100, 255)},
-      {u"Blues"_s,           QVector2D(-800, -2000),  QColor(50, 150, 255)},
-      {u"Ambient"_s,         QVector2D(0, -3500),     QColor(100, 150, 255)},
-      {u"Classical"_s,       QVector2D(0, 3500),      QColor(200, 150, 255)},
-      {u"Cinematic/Score"_s, QVector2D(1000, 4000),   QColor(100, 200, 255)},
-      {u"Industrial"_s,      QVector2D(4000, -4000),  QColor(150, 150, 150)},
-      {u"Pop"_s,             QVector2D(0, 0),         QColor(255, 150, 200)},
-      {u"Country"_s,         QVector2D(-3500, -1000), QColor(200, 180, 100)},
-      {u"Psytrance"_s,       QVector2D(4000, 1500),   QColor(150, 255, 50)},
-      {u"Shoegaze"_s,        QVector2D(-1500, 800),   QColor(200, 200, 255)},
-      {u"Latin"_s,           QVector2D(1500, -2000),  QColor(255, 100, 100)},
-      {u"Glitch/IDM"_s,      QVector2D(3500, -3500),  QColor(100, 255, 255)},
-      {u"Vaporwave"_s,       QVector2D(3500, 3500),   QColor(255, 150, 255)}
-  };
+  UpdateGenreLabels();
 
   QObject::connect(timer_, &QTimer::timeout, this, &GalaxyMapView::updateFrame);
+  QObject::connect(lyrics_fetcher_, &LyricsFetcher::LyricsFetched, this, &GalaxyMapView::onLyricsFetched);
   timer_->start(16);  // ~60fps
 }
 
@@ -264,6 +236,10 @@ void GalaxyMapView::ResetScanFlag() {
   deep_embedding_scan_once_ = false;
   deep_embedding_progress_ = -1.0f;
   fetchSongsFromBackend(true); // Manually requested full scan
+}
+
+void GalaxyMapView::ReloadSettings() {
+  ResetScanFlag();
 }
 
 void GalaxyMapView::showEvent(QShowEvent *event) {
@@ -360,94 +336,347 @@ void GalaxyMapView::fetchSongsFromBackend(bool force_scan) {
   }, Qt::QueuedConnection);
 }
 
-void GalaxyMapView::DeepEmbeddings(bool force_scan) {
-  QMetaObject::invokeMethod(this, [this, force_scan]() {
-      // Logic:
-      // 1. If force_scan is true, always start.
-      // 2. If already scanning, DON'T start again.
-      // 3. If we've already done ONE scan this session, DON'T auto-restart (unless force_scan).
-      if ((deep_embedding_started_ || deep_embedding_scan_once_) && !force_scan) return;
-      
-      deep_embedding_started_ = true;
-      // Clear flag if we are starting a manual force_scan
-      if (force_scan) deep_embedding_scan_once_ = false;
+bool GalaxyMapView::CheckPythonEnvironment() {
+  QString data_dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry"_s;
+  QString venv_path = data_dir + u"/venv"_s;
+  QString python_bin = venv_path + u"/bin/python3"_s;
+  QString requirements_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/requirements.txt");
+  QString marker_path = venv_path + u"/.installed_requirements"_s;
 
-      if (deep_embedding_process_) {
-          deep_embedding_process_->kill();
-          deep_embedding_process_->waitForFinished(500);
-          delete deep_embedding_process_;
+  bool venv_exists = QFile::exists(python_bin);
+  
+  // Calculate requirements hash to detect changes
+  QByteArray requirements_data;
+  QFile req_file(requirements_path);
+  if (req_file.open(QIODevice::ReadOnly)) {
+      requirements_data = QCryptographicHash::hash(req_file.readAll(), QCryptographicHash::Md5).toHex();
+  }
+
+  bool needs_install = !venv_exists;
+  if (venv_exists) {
+      QFile marker(marker_path);
+      if (marker.open(QIODevice::ReadOnly)) {
+          if (marker.readAll() != requirements_data) {
+              needs_install = true;
+          }
+      } else {
+          needs_install = true;
       }
-      deep_embedding_process_ = new QProcess(this);
-      QString music_dir = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
-      QString script_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/analyze_library.py");
-      
-      QString python_path = QStringLiteral("python3");
-      if (QFile::exists(QStringLiteral("/home/jchen/Documents/Projects/strawberry/build/.venv/bin/python3"))) {
-          python_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/build/.venv/bin/python3");
+  }
+
+  if (!needs_install) return true;
+
+  if (!venv_exists) {
+    deep_embedding_status_ = tr("Creating Python virtual environment...");
+    update();
+    QProcess create_venv;
+    
+    // Search for a stable python version because torch doesn't support 3.14+ yet
+    QString python_exe = QStringLiteral("python3");
+    if (QProcess::execute(QStringLiteral("python3.12"), {QStringLiteral("--version")}) == 0) python_exe = QStringLiteral("python3.12");
+    else if (QProcess::execute(QStringLiteral("python3.11"), {QStringLiteral("--version")}) == 0) python_exe = QStringLiteral("python3.11");
+    
+    qLog(Info) << "Creating venv using:" << python_exe;
+    QString cmd = QStringLiteral("%1 -m venv %2").arg(python_exe, venv_path);
+    create_venv.start(QStringLiteral("bash"), {QStringLiteral("-c"), cmd});
+    if (!create_venv.waitForFinished(60000)) return false;
+  }
+
+  deep_embedding_status_ = tr("Installing AI dependencies (this may take a few minutes)...");
+  update();
+  QProcess pip_install;
+  // Capture output for debugging
+  connect(&pip_install, &QProcess::readyReadStandardOutput, this, [this, &pip_install]() {
+      qLog(Debug) << "PIP:" << pip_install.readAllStandardOutput().trimmed();
+  });
+  connect(&pip_install, &QProcess::readyReadStandardError, this, [this, &pip_install]() {
+      qWarning() << "PIP ERROR:" << pip_install.readAllStandardError().trimmed();
+  });
+
+  QString install_cmd = QStringLiteral("source %1/bin/activate && python3 -m pip install --upgrade pip && python3 -m pip install --no-cache-dir onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ && python3 -m pip install --no-cache-dir -r %2")
+                            .arg(venv_path, requirements_path);
+  
+  qLog(Info) << "Starting AI dependency installation via bash...";
+  pip_install.start(QStringLiteral("bash"), {QStringLiteral("-c"), install_cmd});
+  
+  if (pip_install.waitForFinished(900000)) { // 15 mins
+      if (pip_install.exitCode() == 0) {
+          qLog(Info) << "AI dependencies installed successfully.";
+          QFile marker(marker_path);
+          if (marker.open(QIODevice::WriteOnly)) {
+              marker.write(requirements_data);
+          }
+          return true;
+      } else {
+          qWarning() << "PIP failed with exit code" << pip_install.exitCode();
       }
-      deep_embedding_process_->setProgram(python_path);
-      QStringList args = {script_path, QStringLiteral("--dir"), music_dir};
-      if (force_scan) args << QStringLiteral("--force");
-      deep_embedding_process_->setArguments(args);
-      
-      connect(deep_embedding_process_, &QProcess::readyReadStandardOutput, this, [this]() {
-          while (deep_embedding_process_->canReadLine()) {
-              QByteArray line = deep_embedding_process_->readLine().trimmed();
-              if (line.isEmpty()) continue;
-              
-              QJsonDocument doc = QJsonDocument::fromJson(line);
-              if (doc.isObject()) {
-                  QJsonObject obj = doc.object();
-                  if (obj.contains(QStringLiteral("progress"))) {
-                      deep_embedding_progress_ = obj.value(QStringLiteral("progress")).toDouble();
-                      deep_embedding_status_ = obj.value(QStringLiteral("status")).toString();
-                      update();
-                  }
+  } else {
+      qWarning() << "PIP installation timed out after 15 minutes.";
+      pip_install.kill();
+  }
+  return false;
+}
+
+void GalaxyMapView::DeepEmbeddings(bool force_scan) {
+  if ((deep_embedding_started_ || deep_embedding_scan_once_) && !force_scan) return;
+  deep_embedding_started_ = true;
+  if (force_scan) deep_embedding_scan_once_ = false;
+
+  // Run environment check in background to avoid freezing UI
+  QtConcurrent::run([this, force_scan]() {
+      if (!CheckPythonEnvironment()) {
+          QMetaObject::invokeMethod(this, [this]() {
+              deep_embedding_status_ = tr("Python setup failed");
+              deep_embedding_started_ = false;
+              update();
+          });
+          return;
+      }
+
+      QMetaObject::invokeMethod(this, [this, force_scan]() {
+          if (deep_embedding_process_) {
+              deep_embedding_process_->kill();
+              deep_embedding_process_->waitForFinished(500);
+              delete deep_embedding_process_;
+          }
+          deep_embedding_process_ = new QProcess(this);
+          QString music_dir = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+          QString script_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/analyze_library.py");
+          QString data_dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry"_s;
+          QString venv_path = data_dir + u"/venv"_s;
+
+          // Configure LD_LIBRARY_PATH to find pip-installed CUDA/cuDNN
+          QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+          QString ld_path = env.value(u"LD_LIBRARY_PATH"_s);
+          
+          // Helper to add all nvidia subdirs to LD_LIBRARY_PATH
+          QString site_packages = venv_path + u"/lib/python3.14/site-packages/nvidia"_s;
+          if (QDir(site_packages).exists()) {
+              QDir nvidia_dir(site_packages);
+              for (const QString &subdir : nvidia_dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                  ld_path = site_packages + u"/"_s + subdir + u"/lib:"_s + ld_path;
               }
           }
-      });
-
-      connect(deep_embedding_process_, &QProcess::readyReadStandardError, this, [this]() {
-          qWarning() << "PYTHON ERROR:" << deep_embedding_process_->readAllStandardError();
-      });
-      
-      connect(deep_embedding_process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int, QProcess::ExitStatus) {
-          deep_embedding_started_ = false;
-          deep_embedding_scan_once_ = true; // Mark as done for this map session
-          deep_embedding_progress_ = 1.0f;
-          deep_embedding_status_ = tr("Scan finished");
           
-          if (live_reveal_timer_) {
-              live_reveal_timer_->stop();
+          // Cleanup Error 804 candidates from system path
+          QStringList paths = ld_path.split(u':', Qt::SkipEmptyParts);
+          QStringList filtered;
+          for (const QString &p : paths) {
+              if (!(p.contains(u"nvidia"_s, Qt::CaseInsensitive) && p.contains(u"compat"_s, Qt::CaseInsensitive))) {
+                  filtered << p;
+              }
           }
+          env.insert(u"LD_LIBRARY_PATH"_s, filtered.join(u':'));
+          deep_embedding_process_->setProcessEnvironment(env);
 
-          // Hide progress bar after 3 seconds
-          QTimer::singleShot(3000, this, [this]() {
-            if (!deep_embedding_started_) {
-              deep_embedding_progress_ = -1.0f;
-              update();
-            }
+          deep_embedding_process_->setProgram(QStringLiteral("bash"));
+          QString run_cmd = QStringLiteral("source %1/bin/activate && python3 %2 --dir \"%3\"")
+                                .arg(venv_path, script_path, music_dir);
+          if (force_scan) run_cmd += QStringLiteral(" --force");
+          deep_embedding_process_->setArguments({QStringLiteral("-c"), run_cmd});
+          
+          connect(deep_embedding_process_, &QProcess::readyReadStandardOutput, this, [this]() {
+              while (deep_embedding_process_->canReadLine()) {
+                  QByteArray line = deep_embedding_process_->readLine().trimmed();
+                  if (line.isEmpty()) continue;
+                  QJsonDocument doc = QJsonDocument::fromJson(line);
+                  if (doc.isObject()) {
+                      QJsonObject obj = doc.object();
+                      if (obj.contains(u"progress"_s)) {
+                          deep_embedding_progress_ = obj.value(u"progress"_s).toDouble();
+                          deep_embedding_status_ = obj.value(u"status"_s).toString();
+                          update();
+                      }
+                  }
+              }
           });
 
-          // Final database fetch WITHOUT triggering a restart
-          fetchSongsFromBackend(false);
-          update();
+          connect(deep_embedding_process_, &QProcess::readyReadStandardError, this, [this]() {
+              qWarning() << "PYTHON ERROR:" << deep_embedding_process_->readAllStandardError();
+          });
+          
+          connect(deep_embedding_process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int, QProcess::ExitStatus) {
+              deep_embedding_started_ = false;
+              deep_embedding_scan_once_ = true;
+              deep_embedding_progress_ = 1.0f;
+              deep_embedding_status_ = tr("Scan finished");
+              if (live_reveal_timer_) live_reveal_timer_->stop();
+              QTimer::singleShot(3000, this, [this]() {
+                if (!deep_embedding_started_) { deep_embedding_progress_ = -1.0f; update(); }
+              });
+              fetchSongsFromBackend(false);
+              update();
+          });
+          
+          deep_embedding_progress_ = 0.0f;
+          deep_embedding_process_->start();
+          if (!live_reveal_timer_) {
+              live_reveal_timer_ = new QTimer(this);
+              connect(live_reveal_timer_, &QTimer::timeout, this, [this]() { fetchSongsFromBackend(false); });
+          }
+          live_reveal_timer_->start(5000);
       });
-      
-      deep_embedding_progress_ = 0.0f;
-      deep_embedding_process_->start();
+  });
+}
 
-      if (!live_reveal_timer_) {
-          live_reveal_timer_ = new QTimer(this);
-          connect(live_reveal_timer_, &QTimer::timeout, this, [this]() { fetchSongsFromBackend(false); });
+void GalaxyMapView::LyricsEmotion(bool force_scan) {
+  if ((deep_embedding_started_ || deep_embedding_scan_once_) && !force_scan) return;
+  fetchMissingLyrics();
+  deep_embedding_started_ = true;
+  if (force_scan) deep_embedding_scan_once_ = false;
+
+  QtConcurrent::run([this, force_scan]() {
+      if (!CheckPythonEnvironment()) {
+          QMetaObject::invokeMethod(this, [this]() {
+              deep_embedding_status_ = tr("Python setup failed");
+              deep_embedding_started_ = false;
+              update();
+          });
+          return;
       }
-      live_reveal_timer_->start(5000);
-  }, Qt::QueuedConnection);
+
+      QMetaObject::invokeMethod(this, [this, force_scan]() {
+          if (deep_embedding_process_) {
+              deep_embedding_process_->kill();
+              deep_embedding_process_->waitForFinished(500);
+              delete deep_embedding_process_;
+          }
+          deep_embedding_process_ = new QProcess(this);
+          QString music_dir = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+          QString script_path = QStringLiteral("/home/jchen/Documents/Projects/strawberry/src/galaxymap/analyze_lyrics.py");
+          QString data_dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry"_s;
+          QString venv_path = data_dir + u"/venv"_s;
+
+          // Configure LD_LIBRARY_PATH to find pip-installed CUDA/cuDNN
+          QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+          QString ld_path = env.value(u"LD_LIBRARY_PATH"_s);
+          
+          QString site_packages = venv_path + u"/lib/python3.14/site-packages/nvidia"_s;
+          if (QDir(site_packages).exists()) {
+              QDir nvidia_dir(site_packages);
+              for (const QString &subdir : nvidia_dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                  ld_path = site_packages + u"/"_s + subdir + u"/lib:"_s + ld_path;
+              }
+          }
+          
+          QStringList paths = ld_path.split(u':', Qt::SkipEmptyParts);
+          QStringList filtered;
+          for (const QString &p : paths) {
+              if (!(p.contains(u"nvidia"_s, Qt::CaseInsensitive) && p.contains(u"compat"_s, Qt::CaseInsensitive))) {
+                  filtered << p;
+              }
+          }
+          env.insert(u"LD_LIBRARY_PATH"_s, filtered.join(u':'));
+          deep_embedding_process_->setProcessEnvironment(env);
+
+          deep_embedding_process_->setProgram(QStringLiteral("bash"));
+          QString run_cmd = QStringLiteral("source %1/bin/activate && python3 %2 --dir \"%3\"")
+                                .arg(venv_path, script_path, music_dir);
+          if (force_scan) run_cmd += QStringLiteral(" --force");
+          deep_embedding_process_->setArguments({QStringLiteral("-c"), run_cmd});
+          
+          connect(deep_embedding_process_, &QProcess::readyReadStandardOutput, this, [this]() {
+              while (deep_embedding_process_->canReadLine()) {
+                  QByteArray line = deep_embedding_process_->readLine().trimmed();
+                  if (line.isEmpty()) continue;
+                  QJsonDocument doc = QJsonDocument::fromJson(line);
+                  if (doc.isObject()) {
+                      QJsonObject obj = doc.object();
+                      if (obj.contains(u"progress"_s)) {
+                          deep_embedding_progress_ = obj.value(u"progress"_s).toDouble();
+                          deep_embedding_status_ = obj.value(u"status"_s).toString();
+                          update();
+                      }
+                  }
+              }
+          });
+
+          connect(deep_embedding_process_, &QProcess::readyReadStandardError, this, [this]() {
+              qWarning() << "PYTHON LYRICS ERROR:" << deep_embedding_process_->readAllStandardError();
+          });
+          
+          connect(deep_embedding_process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int, QProcess::ExitStatus) {
+              deep_embedding_started_ = false;
+              deep_embedding_scan_once_ = true;
+              deep_embedding_progress_ = 1.0f;
+              deep_embedding_status_ = tr("Lyrics scan finished");
+              if (live_reveal_timer_) live_reveal_timer_->stop();
+              QTimer::singleShot(3000, this, [this]() {
+                if (!deep_embedding_started_) { deep_embedding_progress_ = -1.0f; update(); }
+              });
+              fetchSongsFromBackend(false);
+              update();
+          });
+          
+          deep_embedding_progress_ = 0.0f;
+          deep_embedding_process_->start();
+          if (!live_reveal_timer_) {
+              live_reveal_timer_ = new QTimer(this);
+              connect(live_reveal_timer_, &QTimer::timeout, this, [this]() { fetchSongsFromBackend(false); });
+          }
+          live_reveal_timer_->start(5000);
+      });
+  });
+}
+
+void GalaxyMapView::UpdateGenreLabels() {
+  Settings s;
+  s.beginGroup(AppearanceSettings::kSettingsGroup);
+  AppearanceSettings::GalaxyBackendType backend_type = static_cast<AppearanceSettings::GalaxyBackendType>(s.value(AppearanceSettings::kGalaxyBackend, static_cast<int>(AppearanceSettings::GalaxyBackendType::BasicMath)).toInt());
+  s.endGroup();
+
+  if (backend_type == AppearanceSettings::GalaxyBackendType::LyricsEmotion) {
+    genre_continents_ = {
+      {u"Joyful"_s,             QVector2D(3000, 3000),   QColor(255, 255, 100)},
+      {u"Love/Warm"_s,          QVector2D(1500, 1500),   QColor(255, 150, 200)},
+      {u"Neutral"_s,            QVector2D(0, 0),         QColor(200, 200, 200)},
+      {u"Sadness"_s,            QVector2D(0, -4000),     QColor(100, 150, 255)},
+      {u"Fear/Dark"_s,          QVector2D(-1500, -1500), QColor(180, 100, 255)},
+      {u"Anger"_s,              QVector2D(-3000, -3000), QColor(255, 100, 100)},
+      {u"Surprise"_s,           QVector2D(0, 4000),      QColor(255, 200, 100)},
+      {u"Instrumental"_s,       QVector2D(4000, 0),      QColor(150, 150, 150)}
+    };
+  } else {
+    // Exact sync with analyze_library.py VIBES_DATA
+    genre_continents_ = {
+        {u"Electronic"_s,      QVector2D(3000, 3000),   QColor(165, 255, 220)},
+        {u"DnB/Jungle"_s,      QVector2D(3500, 2500),   QColor(100, 255, 100)},
+        {u"Techno"_s,          QVector2D(4000, 2000),   QColor(0, 255, 170)},
+        {u"Synthwave/Retro"_s, QVector2D(4500, 3500),   QColor(255, 50, 255)},
+        {u"Hardstyle"_s,       QVector2D(4500, 1500),   QColor(255, 50, 50)},
+        {u"Rock"_s,            QVector2D(-3000, 3000),  QColor(250, 180, 50)},
+        {u"Metal"_s,           QVector2D(-4000, 4000),  QColor(150, 80, 50)},
+        {u"Punk/Garage"_s,     QVector2D(-3500, 2500),  QColor(255, 80, 20)},
+        {u"Aggressive"_s,      QVector2D(-4500, 4500),  QColor(255, 0, 0)},
+        {u"Hip-Hop"_s,         QVector2D(3000, -3000),  QColor(255, 220, 50)},
+        {u"Soul/R&B"_s,        QVector2D(2500, -3500),  QColor(255, 50, 150)},
+        {u"Disco/Funk"_s,      QVector2D(3500, -2500),  QColor(255, 100, 255)},
+        {u"Reggae/Dub"_s,      QVector2D(2000, -4000),  QColor(50, 255, 50)},
+        {u"Acoustic"_s,        QVector2D(-3000, -3000), QColor(255, 200, 150)},
+        {u"Folk/Indie"_s,      QVector2D(-3500, -2500), QColor(200, 150, 100)},
+        {u"Lo-Fi/Study"_s,     QVector2D(-2500, -3500), QColor(180, 150, 255)},
+        {u"Jazz/Lounge"_s,     QVector2D(-2000, -4000), QColor(200, 100, 255)},
+        {u"Blues"_s,           QVector2D(-1500, -3000), QColor(50, 150, 255)},
+        {u"Ambient"_s,         QVector2D(0, -4000),     QColor(100, 150, 255)},
+        {u"Classical"_s,       QVector2D(0, 4000),      QColor(200, 150, 255)},
+        {u"Cinematic/Score"_s, QVector2D(1000, 4500),   QColor(100, 200, 255)},
+        {u"Industrial"_s,      QVector2D(4000, -4000),  QColor(150, 150, 150)},
+        {u"Pop"_s,             QVector2D(0, 0),         QColor(255, 150, 200)},
+        {u"Country"_s,         QVector2D(-4000, -2000), QColor(200, 180, 100)},
+        {u"Psytrance"_s,       QVector2D(4500, 2500),   QColor(150, 255, 50)},
+        {u"Shoegaze"_s,        QVector2D(-2500, 1500),  QColor(200, 200, 255)},
+        {u"Latin"_s,           QVector2D(2500, -3000),  QColor(255, 100, 100)},
+        {u"Glitch/IDM"_s,      QVector2D(4000, -3500),  QColor(100, 255, 255)},
+        {u"Vaporwave"_s,       QVector2D(4500, 4500),   QColor(255, 150, 255)}
+    };
+  }
+  update();
 }
 
 void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
   // Version sentinel — clear stale cache if math changed
   const int kVibeVersion = 13;
+  UpdateGenreLabels();
   {
     QSettings vc(u"Strawberry"_s, u"GalaxyVibeMap"_s);
     if (vc.value(u"__version"_s).toInt() != kVibeVersion) {
@@ -613,6 +842,8 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
 
   if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
       DeepEmbeddings(force_scan);
+  } else if (backend_type == AppearanceSettings::GalaxyBackendType::LyricsEmotion) {
+      LyricsEmotion(force_scan);
   }
 
   auto future_ = QtConcurrent::run([this, songs, raw, jitter_seeds, processMoodMath, backend_type]() {
@@ -630,21 +861,21 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
       float lyrical; float temp_mov; float harm; float purity; float bpm_conf;
     };
     QHash<QString, DbEntry> db_embeddings;
-    if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
-      QString db_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/strawberry/strawberry/galaxy_embeddings.db");
+    if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings || backend_type == AppearanceSettings::GalaxyBackendType::LyricsEmotion) {
+      QString db_name = (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) ? u"galaxy_embeddings.db"_s : u"galaxy_lyrics_embeddings.db"_s;
+      QString db_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/"_s + db_name;
       if (QFile::exists(db_path)) {
-        QString connection_name = QStringLiteral("embeddings_db_") + QString::number(bg_rng.generate());
+        const QString connection_name = QStringLiteral("embeddings_db_%1_%2").arg(
+            QString::number(reinterpret_cast<uintptr_t>(QThread::currentThread())),
+            QString::number(QRandomGenerator::global()->generate()));
         {
-          QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection_name);
+          QSqlDatabase db = QSqlDatabase::addDatabase(u"QSQLITE"_s, connection_name);
           db.setDatabaseName(db_path);
-          db.setConnectOptions(QStringLiteral("QSQLITE_BUSY_TIMEOUT=30000"));
+          db.setConnectOptions(u"QSQLITE_BUSY_TIMEOUT=30000"_s);
           if (db.open()) {
-            QSqlQuery pragma(db);
-            pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
-            pragma.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
             QSqlQuery q(db);
-            if (!q.exec(QStringLiteral("SELECT path, x, y, vibrancy, virtual_genre, confidence_score, lyrical_density, temporal_movement, harmonic_complexity, genre_purity, bpm_confidence FROM embeddings"))) {
-              q.exec(QStringLiteral("SELECT path, x, y, vibrancy, virtual_genre FROM embeddings"));
+            if (!q.exec(u"SELECT path, x, y, vibrancy, virtual_genre, confidence_score, lyrical_density, temporal_movement, harmonic_complexity, genre_purity, bpm_confidence FROM embeddings"_s)) {
+              q.exec(u"SELECT path, x, y, vibrancy, virtual_genre FROM embeddings"_s);
             }
             int count = 0;
             while (q.next()) {
@@ -663,45 +894,65 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
               if (std::isnan(conf)) conf = 0.0f;
               
               int hue = 0;
-              if      (v_genre.contains(u"Aggressive"_s)) hue = 0;   // Crimson
-              else if (v_genre.contains(u"Metal"_s))      hue = 12;  // Rust
-              else if (v_genre.contains(u"Rock"_s))       hue = 32;  // Amber
-              else if (v_genre.contains(u"Punk"_s))       hue = 18;  // Blood Orange
-              else if (v_genre.contains(u"Hip-Hop"_s))    hue = 58;  // Gold
-              else if (v_genre.contains(u"Soul"_s))       hue = 345; // Raspberry
-              else if (v_genre.contains(u"Disco"_s))      hue = 310; // Magenta
-              else if (v_genre.contains(u"Reggae"_s))     hue = 120; // Grass Green
-              else if (v_genre.contains(u"DnB"_s))        hue = 100; // Acid Green
-              else if (v_genre.contains(u"Hardstyle"_s)) hue = 5;   // Bright Fire Red
-              else if (v_genre.contains(u"Techno"_s))     hue = 165; // Emerald
-              else if (v_genre.contains(u"Electronic"_s)) hue = 195; // Cyan
-              else if (v_genre.contains(u"Synthwave"_s))  hue = 305; // Neon Purple
-              else if (v_genre.contains(u"Ambient"_s))    hue = 215; // Cobalt
-              else if (v_genre.contains(u"Cinematic"_s))  hue = 200; // Sky Blue
-              else if (v_genre.contains(u"Classical"_s))  hue = 265; // Amethyst
-              else if (v_genre.contains(u"Jazz"_s))       hue = 295; // Deep Lavender 
-              else if (v_genre.contains(u"Pop"_s))        hue = 330; // Rose
-              else if (v_genre.contains(u"Acoustic"_s))   hue = 45;  // Peach
-              else if (v_genre.contains(u"Folk"_s))       hue = 38;  // Earthy Orange
-              else if (v_genre.contains(u"Lo-Fi"_s))      hue = 280; // Muted Violet
-              else if (v_genre.contains(u"Blues"_s))      hue = 230; // Deep Sky Blue 
-              else if (v_genre.contains(u"Industrial"_s)) hue = 180; // Cold Teal
-              else if (v_genre.contains(u"Country"_s))    hue = 40;  // Golden Brown
-              else if (v_genre.contains(u"Psytrance"_s))  hue = 80;  // Lime
-              else if (v_genre.contains(u"Shoegaze"_s))   hue = 240; // Royal Blue
-              else if (v_genre.contains(u"Latin"_s))      hue = 10;  // Vermillion
-              else if (v_genre.contains(u"Glitch"_s))     hue = 185; // Turquoise
-              else if (v_genre.contains(u"Vaporwave"_s))  hue = 290; // Hot Pink
-              else hue = static_cast<int>(qHash(v_genre) % 360);
+              if (backend_type == AppearanceSettings::GalaxyBackendType::LyricsEmotion) {
+                  if      (v_genre.contains(u"Joyful"_s))    hue = 60;  // Yellow
+                  else if (v_genre.contains(u"Love"_s))      hue = 330; // Rose
+                  else if (v_genre.contains(u"Sadness"_s))   hue = 210; // Blue
+                  else if (v_genre.contains(u"Anger"_s))     hue = 0;   // Red
+                  else if (v_genre.contains(u"Fear"_s))      hue = 280; // Purple
+                  else if (v_genre.contains(u"Surprise"_s))  hue = 45;  // Orange
+                  else if (v_genre.contains(u"Neutral"_s))   hue = 180; // Cyan
+                  else if (v_genre.contains(u"Instrumental"_s)) hue = 280; 
+                  else hue = static_cast<int>(qHash(v_genre) % 360);
+              } else {
+                  if      (v_genre.contains(u"Aggressive"_s)) hue = 0;   // Crimson
+                  else if (v_genre.contains(u"Metal"_s))      hue = 12;  // Rust
+                  else if (v_genre.contains(u"Rock"_s))       hue = 32;  // Amber
+                  else if (v_genre.contains(u"Punk"_s))       hue = 18;  // Blood Orange
+                  else if (v_genre.contains(u"Hip-Hop"_s))    hue = 58;  // Gold
+                  else if (v_genre.contains(u"Soul"_s))       hue = 345; // Raspberry
+                  else if (v_genre.contains(u"Disco"_s))      hue = 310; // Magenta
+                  else if (v_genre.contains(u"Reggae"_s))     hue = 120; // Grass Green
+                  else if (v_genre.contains(u"DnB"_s))        hue = 100; // Acid Green
+                  else if (v_genre.contains(u"Hardstyle"_s)) hue = 5;   // Bright Fire Red
+                  else if (v_genre.contains(u"Techno"_s))     hue = 165; // Emerald
+                  else if (v_genre.contains(u"Electronic"_s)) hue = 195; // Cyan
+                  else if (v_genre.contains(u"Synthwave"_s))  hue = 305; // Neon Purple
+                  else if (v_genre.contains(u"Ambient"_s))    hue = 215; // Cobalt
+                  else if (v_genre.contains(u"Cinematic"_s))  hue = 200; // Sky Blue
+                  else if (v_genre.contains(u"Classical"_s))  hue = 265; // Amethyst
+                  else if (v_genre.contains(u"Jazz"_s))       hue = 295; // Deep Lavender 
+                  else if (v_genre.contains(u"Pop"_s))        hue = 330; // Rose
+                  else if (v_genre.contains(u"Acoustic"_s))   hue = 45;  // Peach
+                  else if (v_genre.contains(u"Folk"_s))       hue = 38;  // Earthy Orange
+                  else if (v_genre.contains(u"Lo-Fi"_s))      hue = 280; // Muted Violet
+                  else if (v_genre.contains(u"Blues"_s))      hue = 230; // Deep Sky Blue 
+                  else if (v_genre.contains(u"Industrial"_s)) hue = 180; // Cold Teal
+                  else if (v_genre.contains(u"Country"_s))    hue = 40;  // Golden Brown
+                  else if (v_genre.contains(u"Psytrance"_s))  hue = 80;  // Lime
+                  else if (v_genre.contains(u"Shoegaze"_s))   hue = 240; // Royal Blue
+                  else if (v_genre.contains(u"Latin"_s))      hue = 10;  // Vermillion
+                  else if (v_genre.contains(u"Glitch"_s))     hue = 185; // Turquoise
+                  else if (v_genre.contains(u"Vaporwave"_s))  hue = 290; // Hot Pink
+                  else hue = static_cast<int>(qHash(v_genre) % 360);
+              }
 
-              // Low confidence or "Unclassified" -> Muted / Grey
-              int sat = std::max(160, std::min(255, 160 + static_cast<int>(vib * 100)));
-              int val = std::max(220, std::min(255, 200 + static_cast<int>(vib * 120)));
+              // Adjust saturation and value based on vibrancy
+              int sat = std::max(120, std::min(255, 140 + static_cast<int>(vib * 120)));
+              int val = std::max(200, std::min(255, 180 + static_cast<int>(vib * 100)));
 
               if (v_genre == u"Unclassified"_s) {
-                sat = 40; // Very desaturated
-                val = 150; // Dimmed
+                sat = 40; 
+                val = 150; 
                 hue = 0; 
+              } else if (v_genre == u"Neutral"_s) {
+                sat = 100; // More colorful than before
+                val = 220;
+                hue = 180; // Soft Cyan
+              } else if (v_genre == u"Instrumental"_s) {
+                sat = 120;
+                val = 200;
+                hue = 280; // Muted Purple
               }
 
               QColor tc;
@@ -720,7 +971,6 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
               }
             }
             qLog(Info) << "GalaxyMapView: Loaded" << count << "embeddings from DB";
-            db.close();
           }
         }
         QSqlDatabase::removeDatabase(connection_name);
@@ -739,7 +989,7 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
       float bpm = song.bpm() > 0.0f ? song.bpm() : 120.0f;
       QString hk = u"vcode_"_s + QString::fromUtf8(song.url().toEncoded().toHex());
       
-      if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings) {
+      if (backend_type == AppearanceSettings::GalaxyBackendType::DeepEmbeddings || backend_type == AppearanceSettings::GalaxyBackendType::LyricsEmotion) {
         QString local_path = song.url().toLocalFile();
         if (db_embeddings.contains(local_path)) {
           DbEntry emb = db_embeddings.value(local_path);
@@ -785,6 +1035,12 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
 
     // ── PHASE 2 (main thread): build star objects immediately ─────────────────
     QMetaObject::invokeMethod(this, [this, songs, entries, jitter_seeds]() {
+      // Preserve selection if possible
+      QUrl selected_url;
+      if (selected_star_ >= 0 && selected_star_ < stars_.size()) {
+          selected_url = stars_[selected_star_].url;
+      }
+
       stars_.clear();
       selected_star_ = -1;
       hovered_star_ = -1;
@@ -832,14 +1088,33 @@ void GalaxyMapView::buildStars(const SongList &songs, bool force_scan) {
         star.harmonic_complexity = entries[i].harm;
         star.genre_purity = entries[i].purity;
         star.bpm_confidence = entries[i].bpm_conf;
+        
+        if (!selected_url.isEmpty() && star.url == selected_url) {
+            selected_star_ = stars_.size();
+        }
         stars_.append(star);
       }
 
       constellations_.clear();
-      constellations_.append({{},{},QVector2D(-1000,-1000),u"Distorted / Gritty"_s});
-      constellations_.append({{},{},QVector2D(-1000, 1000),u"Acoustic / Warm"_s});
-      constellations_.append({{},{},QVector2D( 1000,-1000),u"Bright / Sharp"_s});
-      constellations_.append({{},{},QVector2D( 1000, 1000),u"Tonal / Pure"_s});
+      
+      // Determine if we are in lyrics mode to use relevant mood labels
+      Settings s;
+      s.beginGroup(AppearanceSettings::kSettingsGroup);
+      AppearanceSettings::GalaxyBackendType bt = static_cast<AppearanceSettings::GalaxyBackendType>(s.value(AppearanceSettings::kGalaxyBackend, static_cast<int>(AppearanceSettings::GalaxyBackendType::BasicMath)).toInt());
+      s.endGroup();
+
+      if (bt == AppearanceSettings::GalaxyBackendType::LyricsEmotion) {
+          constellations_.append({{},{},QVector2D(-3500,-3500),u"Aggressive / Dark"_s});
+          constellations_.append({{},{},QVector2D(-3500, 3500),u"Melancholic / Blue"_s});
+          constellations_.append({{},{},QVector2D( 3500,-3500),u"Euphoric / Bright"_s});
+          constellations_.append({{},{},QVector2D( 3500, 3500),u"Warm / Positive"_s});
+      } else {
+          // Standard audio mood quadrants expanded to 4500 space
+          constellations_.append({{},{},QVector2D(-3500,-3500),u"Distorted / Gritty"_s});
+          constellations_.append({{},{},QVector2D(-3500, 3500),u"Acoustic / Warm"_s});
+          constellations_.append({{},{},QVector2D( 3500,-3500),u"Bright / Sharp"_s});
+          constellations_.append({{},{},QVector2D( 3500, 3500),u"Tonal / Pure"_s});
+      }
       update();
 
       // ── PHASE 3a: Vibe Gravitation — pull co-located stars 5% toward cluster centroid
@@ -1197,8 +1472,40 @@ void GalaxyMapView::drawConstellationView(QPainter &p) {
   p.save();
   p.setRenderHint(QPainter::Antialiasing, true);
 
-  // Centroid labels are now handled by drawGenreLabels to ensure they follow world coordinates.
-  // We'll leave drawConstellationView for constellations and planet highlights.
+  // --- Draw corner quadrant mood labels ---
+  float opacity = 1.0f;
+  if (zoom_ > 0.45f) {
+      opacity = std::clamp(1.0f - (zoom_ - 0.45f) * 6.0f, 0.0f, 1.0f);
+  } else if (zoom_ < 0.18f) {
+      opacity = std::clamp((zoom_ - 0.12f) / 0.06f, 0.0f, 1.0f);
+  }
+
+  if (opacity > 0.01f) {
+      QFont moodFont(u"Inter"_s, 14, QFont::ExtraBold);
+      p.setFont(moodFont);
+      QFontMetrics fm(moodFont);
+      for (const auto &c : constellations_) {
+          QPointF sp = worldToScreen(c.centroid);
+          if (sp.x() < -200 || sp.x() > width() + 200 || sp.y() < -200 || sp.y() > height() + 200)
+              continue;
+
+          QString txt = c.label.toUpper();
+          int tw = fm.horizontalAdvance(txt) + 40;
+          int th = 46;
+          QRectF rect(sp.x() - tw / 2.0, sp.y() - th / 2.0, tw, th);
+
+          p.setPen(Qt::NoPen);
+          p.setBrush(QColor(255, 255, 255, static_cast<int>(15 * opacity)));
+          p.drawRoundedRect(rect, th / 2.0, th / 2.0);
+          
+          p.setPen(QPen(QColor(255, 255, 255, static_cast<int>(40 * opacity)), 2.0));
+          p.setBrush(Qt::NoBrush);
+          p.drawRoundedRect(rect, th / 2.0, th / 2.0);
+
+          p.setPen(QColor(255, 255, 255, static_cast<int>(200 * opacity)));
+          p.drawText(rect, Qt::AlignCenter, txt);
+      }
+  }
 
   // Draw selected star: album art thumbnail + name pill
   if (selected_star_ >= 0 && selected_star_ < stars_.size()) {
@@ -1458,7 +1765,7 @@ void GalaxyMapView::drawGenreLabels(QPainter &p) {
 void GalaxyMapView::wheelEvent(QWheelEvent *event) {
   float delta = static_cast<float>(event->angleDelta().y());
   float factor = (delta > 0) ? 1.12f : (1.0f / 1.12f);
-  zoom_ = std::max(0.008f, std::min(zoom_ * factor, 8.0f));
+  zoom_ = std::max(0.008f, std::min(zoom_ * factor, 12.0f));
   update();
 }
 
@@ -1599,5 +1906,42 @@ void GalaxyMapView::mouseReleaseEvent(QMouseEvent *event) {
         update();
       }
     }
+  }
+}
+
+void GalaxyMapView::onLyricsFetched(const quint64 request_id, const QString &provider, const QString &lyrics) {
+  Q_UNUSED(provider);
+  if (!lyrics_request_to_song_index_.contains(request_id)) return;
+  int idx = lyrics_request_to_song_index_.take(request_id);
+  if (idx < 0 || idx >= all_songs_.size()) return;
+
+  if (!lyrics.isEmpty()) {
+    Song &song = all_songs_[idx];
+    *song.mutable_lyrics() = lyrics;
+    // Save to database so Python can pick it up
+    app_->collection_backend()->AddOrUpdateSongs(SongList() << song);
+    qLog(Debug) << "Fetched and saved lyrics for" << song.title() << "via" << provider;
+    
+    // Trigger a light re-scan to pick up the new lyrics
+    LyricsEmotion(false);
+  }
+}
+
+void GalaxyMapView::fetchMissingLyrics() {
+  if (!lyrics_fetcher_) return;
+
+  int count = 0;
+  for (int i = 0; i < all_songs_.size(); ++i) {
+    const Song &song = all_songs_[i];
+    if (song.lyrics().isEmpty()) {
+      quint64 req_id = lyrics_fetcher_->Search(song);
+      lyrics_request_to_song_index_[req_id] = i;
+      count++;
+    }
+    // Limit batch to avoid overwhelming at once, though fetcher has its own queue
+    if (count > 500) break; 
+  }
+  if (count > 0) {
+    qLog(Info) << "Queued" << count << "missing lyrics for fetching";
   }
 }

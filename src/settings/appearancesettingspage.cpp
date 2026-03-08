@@ -193,6 +193,8 @@ void AppearanceSettingsPage::Load() {
     ui_->backend_deep_embeddings->setChecked(true);
   } else if (galaxy_backend == GalaxyBackendType::LyricsEmotion) {
     ui_->backend_lyrics_emotion->setChecked(true);
+  } else if (galaxy_backend == GalaxyBackendType::UnifiedFusion) {
+    ui_->backend_unified_fusion->setChecked(true);
   } else {
     ui_->backend_basic_math->setChecked(true);
   }
@@ -274,6 +276,8 @@ void AppearanceSettingsPage::Save() {
     s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::DeepEmbeddings));
   } else if (ui_->backend_lyrics_emotion->isChecked()) {
     s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::LyricsEmotion));
+  } else if (ui_->backend_unified_fusion->isChecked()) {
+    s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::UnifiedFusion));
   } else {
     s.setValue(kGalaxyBackend, static_cast<int>(GalaxyBackendType::BasicMath));
   }
@@ -362,7 +366,8 @@ void AppearanceSettingsPage::ClearGalaxyDatabase() {
   QString base_path = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + u"/strawberry/strawberry/"_s;
   QStringList files_to_remove = {
     u"galaxy_embeddings.db"_s, u"galaxy_umap_model.pkl"_s,
-    u"galaxy_lyrics_embeddings.db"_s, u"galaxy_lyrics_umap_model.pkl"_s
+    u"galaxy_lyrics_embeddings.db"_s, u"galaxy_lyrics_umap_model.pkl"_s,
+    u"galaxy_unified_embeddings.db"_s, u"galaxy_unified_umap_model.pkl"_s
   };
 
   bool all_cleared = true;

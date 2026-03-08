@@ -613,6 +613,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QRadioButton" name="backend_unified_fusion">
+         <property name="text">
+          <string>Unified AI Fusion: Audio + Lyrics (Requires Python Sidecar)</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPushButton" name="button_clear_galaxy_db">
          <property name="text">
           <string>Clear Database / Regenerate</string>

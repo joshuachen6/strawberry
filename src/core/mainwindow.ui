@@ -231,6 +231,16 @@
                  </widget>
                 </item>
                 <item>
+                 <widget class="RatingWidget" name="rating" native="true">
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <widget class="Line" name="line_buttons">
                   <property name="orientation">
                    <enum>Qt::Vertical</enum>
@@ -905,6 +915,12 @@
    <class>PlayingWidget</class>
    <extends>QWidget</extends>
    <header>widgets/playingwidget.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>RatingWidget</class>
+   <extends>QWidget</extends>
+   <header>widgets/ratingwidget.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>

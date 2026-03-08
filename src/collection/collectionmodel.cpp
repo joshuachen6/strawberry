@@ -1014,6 +1014,9 @@ QString CollectionModel::DisplayText(const GroupBy group_by, const Song &song) {
       return QString::number(std::max(0, song.bitdepth()));
     case GroupBy::Bitrate:
       return QString::number(std::max(0, song.bitrate()));
+    case GroupBy::Rating:
+      if (song.rating() < 0) return tr("Not rated");
+      return QString::number(lround(song.rating() * 5.0F)) + " stars"_L1;
     case GroupBy::None:
     case GroupBy::GroupByCount:
       return song.TitleWithCompilationArtist();
@@ -1120,6 +1123,9 @@ QString CollectionModel::SortText(const GroupBy group_by, const Song &song, cons
       return SortTextForNumber(std::max(0, song.bitdepth())) + QLatin1Char(' ');
     case GroupBy::Bitrate:
       return SortTextForNumber(std::max(0, song.bitrate())) + QLatin1Char(' ');
+    case GroupBy::Rating:
+      // Invert so high ratings come first
+      return SortTextForNumber(lround((1.0F - song.rating()) * 10.0F));
     case GroupBy::None:
     case GroupBy::GroupByCount:
       break;
@@ -1260,6 +1266,9 @@ QString CollectionModel::ContainerKey(const GroupBy group_by, const Song &song, 
     case GroupBy::Genre:
       key = TextOrUnknown(song.genre());
       break;
+    case GroupBy::Rating:
+      key = QString::number(lround(song.rating() * 5.0F));
+      break;
     case GroupBy::Composer:
       key = TextOrUnknown(song.composer());
       has_unique_album_identifier = true;
@@ -1348,6 +1357,9 @@ QString CollectionModel::DividerKey(const GroupBy group_by, const Song &song, co
       return SortTextForNumber(song.bitdepth());
     case GroupBy::Bitrate:
       return SortTextForBitrate(song.bitrate());
+    case GroupBy::Rating:
+      if (song.rating() < 0) return u"-1"_s;
+      return QString::number(lround(song.rating() * 5.0F));
     case GroupBy::None:
     case GroupBy::GroupByCount:
       return QString();
@@ -1395,6 +1407,10 @@ QString CollectionModel::DividerDisplayText(const GroupBy group_by, const QStrin
     case GroupBy::Bitrate:
       if (key == "000"_L1) return tr("Unknown");
       return QString::number(key.toInt());  // To remove leading 0s
+
+    case GroupBy::Rating:
+      if (key == "-1"_L1) return tr("Not rated");
+      return key + " stars"_L1;
 
     case GroupBy::None:
     case GroupBy::GroupByCount:

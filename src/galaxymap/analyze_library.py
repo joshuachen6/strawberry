@@ -23,44 +23,51 @@ logging.basicConfig(level=logging.INFO)
 
 DB_PATH = os.path.expanduser('~/.local/share/strawberry/strawberry/galaxy_embeddings.db')
 MODEL_PATH = os.path.expanduser('~/.local/share/strawberry/strawberry/galaxy_umap_model.pkl')
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "galaxy_config.json")
 
-# ─── UNIFIED VIBES DATA (Synced with C++ UI) ───
+# Load Config
+def load_config():
+    with open(CONFIG_PATH, 'r') as f:
+        data = json.load(f)
+    return {c["label"]: tuple(c["pos"]) for c in data["audio"]}
+
+GENRE_CENTROIDS = load_config()
+
+# Prompts remain internal for CLAP model
 VIBES_DATA = [
-    {"label": "Electronic",      "centroid": (3000, 3000),   "prompt": "electronic dance music, synthesizers, drum machine, steady beats"},
-    {"label": "DnB/Jungle",      "centroid": (3500, 2500),   "prompt": "drum and bass, jungle, breakbeats, fast electronic"},
-    {"label": "Techno",          "centroid": (4000, 2000),   "prompt": "techno, four-on-the-floor, industrial beats, hypnotic"},
-    {"label": "Synthwave/Retro", "centroid": (4500, 3500),   "prompt": "synthwave, retro 80s, analog synths, neon"},
-    {"label": "Hardstyle",       "centroid": (4500, 1500),   "prompt": "hardstyle, distorted kick, jumping beats, aggressive dance"},
-    {"label": "Rock",            "centroid": (-3000, 3000),  "prompt": "rock music, electric guitar, acoustic drums, melodic vocals"},
-    {"label": "Metal",           "centroid": (-4000, 4000),  "prompt": "heavy metal, high-gain guitar, double-kick drums, intense"},
-    {"label": "Punk/Garage",     "centroid": (-3500, 2500),  "prompt": "punk rock, fast energy, electric chords, rebellious"},
-    {"label": "Aggressive",      "centroid": (-4500, 4500),  "prompt": "aggressive shouting, screaming vocals, distorted energy"},
-    {"label": "Hip-Hop",         "centroid": (3000, -3000),  "prompt": "hip-hop, rap, rhythmic beats, vocal flow"},
-    {"label": "Soul/R&B",        "centroid": (2500, -3500),  "prompt": "smooth soul, R&B, velvety vocals, groovy"},
-    {"label": "Disco/Funk",      "centroid": (3500, -2500),  "prompt": "disco, funk, syncopated bass, dancey"},
-    {"label": "Reggae/Dub",      "centroid": (2000, -4000),  "prompt": "reggae, off-beat guitar, deep rhythmic bass"},
-    {"label": "Acoustic",        "centroid": (-3000, -3000), "prompt": "acoustic guitar, unplugged, warm natural vocals"},
-    {"label": "Folk/Indie",      "centroid": (-3500, -2500), "prompt": "indie folk, storytelling, acoustic harmonies"},
-    {"label": "Lo-Fi/Study",     "centroid": (-2500, -3500), "prompt": "lo-fi hip hop, vinyl crackle, relaxed atmosphere"},
-    {"label": "Jazz/Lounge",     "centroid": (-2000, -4000), "prompt": "jazz music, brass harmonies, swing percussion"},
-    {"label": "Blues",           "centroid": (-1500, -3000), "prompt": "blues, electric guitar bends, shuffle rhythm"},
-    {"label": "Ambient",         "centroid": (0, -4000),     "prompt": "ambient pads, ethereal soundscape, no beats"},
-    {"label": "Classical",       "centroid": (0, 4000),      "prompt": "classical orchestral, symphony, strings, woodwinds"},
-    {"label": "Cinematic/Score", "centroid": (1000, 4500),   "prompt": "cinematic soundtrack, orchestral building, tension"},
-    {"label": "Industrial",      "centroid": (4000, -4000),  "prompt": "industrial, metallic clanging, abrasive mechanical"},
-    {"label": "Pop",             "centroid": (0, 0),         "prompt": "pop music, studio production, melodic hooks"},
-    {"label": "Country",         "centroid": (-4000, -2000), "prompt": "country music, banjo, steel guitar, twangy vocals, honky tonk"},
-    {"label": "Psytrance",       "centroid": (4500, 2500),   "prompt": "psytrance, goa, pulsating bassline, trippy synths, high energy"},
-    {"label": "Shoegaze",        "centroid": (-2500, 1500),  "prompt": "shoegaze, dream pop, ethereal vocals, walls of distorted guitar, reverb"},
-    {"label": "Latin",           "centroid": (2500, -3000),  "prompt": "latin music, reggaeton, salsa, rhythmic percussion, spanish vocals"},
-    {"label": "Glitch/IDM",      "centroid": (4000, -3500),  "prompt": "glitch, experimental electronic, digital stutter, clicks and pops"},
-    {"label": "Vaporwave",       "centroid": (4500, 4500),   "prompt": "vaporwave, slowed down pop, nostalgic 80s aesthetic, muffled"}
+    {"label": "Electronic",      "prompt": "electronic dance music, synthesizers, drum machine, steady beats"},
+    {"label": "DnB/Jungle",      "prompt": "drum and bass, jungle, breakbeats, fast electronic"},
+    {"label": "Techno",          "prompt": "techno, four-on-the-floor, industrial beats, hypnotic"},
+    {"label": "Synthwave/Retro", "prompt": "synthwave, retro 80s, analog synths, neon"},
+    {"label": "Hardstyle",       "prompt": "hardstyle, distorted kick, jumping beats, aggressive dance"},
+    {"label": "Rock",            "prompt": "rock music, electric guitar, acoustic drums, melodic vocals"},
+    {"label": "Metal",           "prompt": "heavy metal, high-gain guitar, double-kick drums, intense"},
+    {"label": "Punk/Garage",     "prompt": "punk rock, fast energy, electric chords, rebellious"},
+    {"label": "Aggressive",      "prompt": "aggressive shouting, screaming vocals, distorted energy"},
+    {"label": "Hip-Hop",         "prompt": "hip-hop, rap, rhythmic beats, vocal flow"},
+    {"label": "Soul/R&B",        "prompt": "smooth soul, R&B, velvety vocals, groovy"},
+    {"label": "Disco/Funk",      "prompt": "disco, funk, syncopated bass, dancey"},
+    {"label": "Reggae/Dub",      "prompt": "reggae, off-beat guitar, deep rhythmic bass"},
+    {"label": "Acoustic",        "prompt": "acoustic guitar, unplugged, warm natural vocals"},
+    {"label": "Folk/Indie",      "prompt": "indie folk, storytelling, acoustic harmonies"},
+    {"label": "Lo-Fi/Study",     "prompt": "lo-fi hip hop, vinyl crackle, relaxed atmosphere"},
+    {"label": "Jazz/Lounge",     "prompt": "jazz music, brass harmonies, swing percussion"},
+    {"label": "Blues",           "prompt": "blues, electric guitar bends, shuffle rhythm"},
+    {"label": "Ambient",         "prompt": "ambient pads, ethereal soundscape, no beats"},
+    {"label": "Classical",       "prompt": "classical orchestral, symphony, strings, woodwinds"},
+    {"label": "Cinematic/Score", "prompt": "cinematic soundtrack, orchestral building, tension"},
+    {"label": "Industrial",      "prompt": "industrial, metallic clanging, abrasive mechanical"},
+    {"label": "Pop",             "prompt": "pop music, studio production, melodic hooks"},
+    {"label": "Country",         "prompt": "country music, banjo, steel guitar, twangy vocals, honky tonk"},
+    {"label": "Psytrance",       "prompt": "psytrance, goa, pulsating bassline, trippy synths, high energy"},
+    {"label": "Shoegaze",        "prompt": "shoegaze, dream pop, ethereal vocals, walls of distorted guitar, reverb"},
+    {"label": "Latin",           "prompt": "latin music, reggaeton, salsa, rhythmic percussion, spanish vocals"},
+    {"label": "Glitch/IDM",      "prompt": "glitch, experimental electronic, digital stutter, clicks and pops"},
+    {"label": "Vaporwave",       "prompt": "vaporwave, slowed down pop, nostalgic 80s aesthetic, muffled"}
 ]
 
 VIBES_LIST = [v["prompt"] for v in VIBES_DATA]
 VIBES_LABELS = [v["label"] for v in VIBES_DATA]
-GENRE_CENTROIDS = {v["label"]: v["centroid"] for v in VIBES_DATA if "centroid" in v}
-
 LYRICAL_LIST = ["song with vocals, singing, human voice, lyrics", "instrumental music, no vocals, no singing"]
 ALL_PROMPTS = VIBES_LIST + LYRICAL_LIST
 
@@ -100,12 +107,11 @@ def reduce_dimensions(conn):
 
     reducer = umap.UMAP(n_components=2, n_neighbors=min(len(rows)-1, 30), min_dist=0.1, random_state=42)
     coords = reducer.fit_transform(np.array(embeddings))
-    x_min, x_max = np.min(coords[:,0]), np.max(coords[:,0])
-    y_min, y_max = np.min(coords[:,1]), np.max(coords[:,1])
+    x_min, x_max, y_min, y_max = np.min(coords[:,0]), np.max(coords[:,0]), np.min(coords[:,1]), np.max(coords[:,1])
 
     def scale(c, c_min, c_max):
         range_val = max(1e-6, c_max - c_min)
-        return (c - c_min) / range_val * 8000.0 - 4000.0
+        return (c - (c_min + c_max) / 2.0) / range_val * 8500.0
 
     update_data = []
     for i in range(len(rows)):
@@ -113,7 +119,7 @@ def reduce_dimensions(conn):
         genre = v_genres[i]
         target = GENRE_CENTROIDS.get(genre)
         if target:
-            pull = 0.6
+            pull = 0.85
             fx, fy = fx*(1-pull) + target[0]*pull, fy*(1-pull) + target[1]*pull
         update_data.append((float(fx), float(fy), paths[i]))
 
@@ -132,6 +138,5 @@ if __name__ == '__main__':
     # just calling reduce_dimensions at the end.
     
     conn = setup_db(DB_PATH)
-    # (Mocking the call to reduce_dimensions for this update)
     reduce_dimensions(conn)
     conn.close()

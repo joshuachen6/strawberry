@@ -99,6 +99,7 @@ class GalaxyMapView : public QWidget {
   void fetchSongsFromBackend(bool force_scan = false);
   void DeepEmbeddings(bool force_scan = false);
   void LyricsEmotion(bool force_scan = false);
+  void UnifiedFusion(bool force_scan = false);
   bool CheckPythonEnvironment();
   void buildPlaceholderStars();
   void tryLoadFromModel();

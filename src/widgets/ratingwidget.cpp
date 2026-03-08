@@ -132,24 +132,27 @@ void RatingWidget::set_rating(const float rating) {
 }
 
 void RatingWidget::paintEvent(QPaintEvent *e) {
-
   Q_UNUSED(e)
+  QPainter p(this);
+  p.setRenderHint(QPainter::Antialiasing);
 
-  QStylePainter p(this);
+  // We skip drawing PE_PanelLineEdit to keep the background transparent
+  // and match the main player bar's glass theme.
 
-  // Draw the background
-  QStyleOptionFrame opt;
-  opt.initFrom(this);
-  opt.state |= QStyle::State_Sunken;
-  opt.frameShape = QFrame::StyledPanel;
-  opt.lineWidth = style()->pixelMetric(QStyle::PM_DefaultFrameWidth, &opt, this);
-  opt.midLineWidth = 0;
+  float r = (hover_rating_ == -1.0) ? rating_ : hover_rating_;
+  
+  // Draw slight outer glow for active stars
+  if (r > 0) {
+      p.save();
+      p.setCompositionMode(QPainter::CompositionMode_Plus);
+      // Draw glow pass (slightly larger and blurred-style)
+      p.setOpacity(0.4);
+      painter_.Paint(&p, rect().adjusted(-1, -1, 1, 1), r);
+      p.restore();
+  }
 
-  p.drawPrimitive(QStyle::PE_PanelLineEdit, opt);
-
-  // Draw the stars
-  painter_.Paint(&p, rect(), hover_rating_ == -1.0 ? rating_ : hover_rating_);
-
+  // Draw the stars normally
+  painter_.Paint(&p, rect(), r);
 }
 
 void RatingWidget::mousePressEvent(QMouseEvent *e) {

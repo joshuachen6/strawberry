@@ -284,6 +284,7 @@ QActionGroup *CollectionFilterWidget::CreateGroupByActions(const QString &saved_
 
   ret->addAction(CreateGroupByAction(tr("Group by Album"), parent, CollectionModel::Grouping(CollectionModel::GroupBy::Album)));
   ret->addAction(CreateGroupByAction(tr("Group by Genre/Album"), parent, CollectionModel::Grouping(CollectionModel::GroupBy::Genre, CollectionModel::GroupBy::Album)));
+  ret->addAction(CreateGroupByAction(tr("Group by Rating"), parent, CollectionModel::Grouping(CollectionModel::GroupBy::Rating)));
 
   QAction *sep1 = new QAction(parent);
   sep1->setSeparator(true);

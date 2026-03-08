@@ -126,6 +126,7 @@
 #include "widgets/volumeslider.h"
 #include "widgets/multiloadingindicator.h"
 #include "widgets/trackslider.h"
+#include "widgets/ratingwidget.h"
 #include "fileview/fileview.h"
 #include "osd/osdbase.h"
 #include "context/contextview.h"
@@ -1142,6 +1143,8 @@ MainWindow::MainWindow(Application *app,
   // Analyzer
   QObject::connect(ui_->analyzer, &AnalyzerContainer::WheelEvent, this, &MainWindow::VolumeWheelEvent);
 
+  QObject::connect(ui_->rating, &RatingWidget::RatingChanged, &*app_->playlist_manager(), &PlaylistManager::RateCurrentSong);
+
   // Statusbar widgets
   ui_->playlist_summary->setMinimumWidth(QFontMetrics(font()).horizontalAdvance(u"WW selected of WW tracks - [ WW:WW ]"_s));
   ui_->status_bar_stack->setCurrentWidget(ui_->playlist_summary_page);
@@ -1777,6 +1780,7 @@ void MainWindow::SongChanged(const Song &song) {
   song_playing_ = song;
   song_ = song;
   setWindowTitle(song.PrettyTitleWithArtist());
+  ui_->rating->set_rating(song.rating());
   systemtrayicon_->SetProgress(0);
 
 #ifdef HAVE_DBUS

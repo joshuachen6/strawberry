@@ -104,7 +104,8 @@ class CollectionModel : public SimpleTreeModel<CollectionItem> {
     Samplerate = 18,
     Bitdepth = 19,
     Bitrate = 20,
-    GroupByCount = 21,
+    Rating = 21,
+    GroupByCount = 22,
   };
   Q_ENUM(GroupBy)
 

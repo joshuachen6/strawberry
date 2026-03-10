@@ -24,7 +24,8 @@
 
 #include "analyzerbase.h"
 
-#include <cstdint>
+#include <QPainter>
+#include <QTimer>
 #include <cmath>
 #include <algorithm>
 
@@ -73,11 +74,29 @@ void AnalyzerBase::showEvent(QShowEvent *e) {
   Q_UNUSED(e)
   timer_.start(timeout(), this);
 }
-
 void AnalyzerBase::changeEvent(QEvent *e) {
   if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::StyleChange) {
-    setAttribute(Qt::WA_TranslucentBackground, true);
-    update();
+    if (!property("_glass_fixing_active").toBool()) {
+      setProperty("_glass_fixing_active", true);
+
+      // Immediate fix
+      setAttribute(Qt::WA_TranslucentBackground, true);
+      setAttribute(Qt::WA_NoSystemBackground, true);
+      setAttribute(Qt::WA_OpaquePaintEvent, false);
+      setAutoFillBackground(false);
+
+      QTimer::singleShot(500, this, [this]() {
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAttribute(Qt::WA_OpaquePaintEvent, false);
+        setAutoFillBackground(false);
+        update();
+
+        QTimer::singleShot(2000, this, [this]() {
+          setProperty("_glass_fixing_active", false);
+        });
+      });
+    }
   }
   QWidget::changeEvent(e);
 }

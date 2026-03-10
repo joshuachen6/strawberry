@@ -119,9 +119,9 @@ class MainWindow : public QMainWindow, public PlatformInterface {
 
   void SetHiddenInTray(const bool hidden);
   void CommandlineOptionsReceived(const CommandlineOptions &options);
+  void ApplyGlassStyle();
 
- protected:
-  void hideEvent(QHideEvent *e) override;
+  protected:  void hideEvent(QHideEvent *e) override;
   void closeEvent(QCloseEvent *e) override;
   void changeEvent(QEvent *e) override;
   void keyPressEvent(QKeyEvent *e) override;

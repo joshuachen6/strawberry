@@ -418,7 +418,7 @@ MainWindow::MainWindow(Application *app,
 
   // Initialize the UI
   ui_->setupUi(this);
-  setAttribute(Qt::WA_TranslucentBackground, true);
+  ApplyGlassStyle();
 
   if (QGuiApplication::platformName() != "wayland"_L1) {
     setWindowIcon(IconLoader::Load(u"strawberry"_s));
@@ -549,15 +549,15 @@ MainWindow::MainWindow(Application *app,
       if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show || ev->type() == QEvent::PaletteChange || 
           ev->type() == QEvent::ApplicationPaletteChange || ev->type() == QEvent::StyleChange) {
         if (QScrollBar *sb = qobject_cast<QScrollBar*>(obj)) {
-          sb->setAutoFillBackground(false);
-          sb->setAttribute(Qt::WA_OpaquePaintEvent, false);
-          sb->setAttribute(Qt::WA_NoSystemBackground, true);
-          sb->setAttribute(Qt::WA_TranslucentBackground, true);
+          if (sb->autoFillBackground()) sb->setAutoFillBackground(false);
+          if (sb->testAttribute(Qt::WA_OpaquePaintEvent)) sb->setAttribute(Qt::WA_OpaquePaintEvent, false);
+          if (!sb->testAttribute(Qt::WA_NoSystemBackground)) sb->setAttribute(Qt::WA_NoSystemBackground, true);
+          if (!sb->testAttribute(Qt::WA_TranslucentBackground)) sb->setAttribute(Qt::WA_TranslucentBackground, true);
           // Set fixed size for the scrollbar
           if (sb->orientation() == Qt::Vertical) {
-            sb->setFixedWidth(8);
+            if (sb->maximumWidth() != 8) sb->setFixedWidth(8);
           } else {
-            sb->setFixedHeight(8);
+            if (sb->maximumHeight() != 8) sb->setFixedHeight(8);
           }
         }
       }
@@ -583,6 +583,10 @@ MainWindow::MainWindow(Application *app,
       if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show || ev->type() == QEvent::ChildAdded || 
           ev->type() == QEvent::PaletteChange || ev->type() == QEvent::ApplicationPaletteChange || ev->type() == QEvent::StyleChange) {
         if (QDialog *dialog = qobject_cast<QDialog*>(obj)) {
+          // Avoid recursion if we are already fixing things
+          if (dialog->property("_glass_fixing_active").toBool()) return false;
+          
+          dialog->setProperty("_glass_fixing_active", true);
           dialog->setAttribute(Qt::WA_TranslucentBackground, true);
           dialog->setAttribute(Qt::WA_NoSystemBackground, true);
           dialog->setAttribute(Qt::WA_OpaquePaintEvent, false);
@@ -591,10 +595,23 @@ MainWindow::MainWindow(Application *app,
           if (ev->type() == QEvent::Show || ev->type() == QEvent::PaletteChange || 
               ev->type() == QEvent::ApplicationPaletteChange || ev->type() == QEvent::StyleChange) {
             // Linux quirk: Delay slightly to ensure attributes stick after window creation or style change
-            QTimer::singleShot(1, dialog, [dialog]() {
-              dialog->setAttribute(Qt::WA_TranslucentBackground, true);
-              dialog->update();
-            });
+            if (!dialog->property("_glass_fixing_attributes").toBool()) {
+              dialog->setProperty("_glass_fixing_attributes", true);
+              QTimer::singleShot(500, dialog, [dialog]() {
+                dialog->setProperty("_glass_fixing_active", true);
+                dialog->setAttribute(Qt::WA_TranslucentBackground, true);
+                dialog->setAttribute(Qt::WA_NoSystemBackground, true);
+                dialog->setAttribute(Qt::WA_OpaquePaintEvent, false);
+                dialog->setAutoFillBackground(false);
+                dialog->update();
+                
+                // Cooldown
+                QTimer::singleShot(2000, dialog, [dialog]() {
+                  dialog->setProperty("_glass_fixing_attributes", false);
+                  dialog->setProperty("_glass_fixing_active", false);
+                });
+              });
+            }
           }
 
           dialog->setStyleSheet(QStringLiteral(
@@ -611,6 +628,7 @@ MainWindow::MainWindow(Application *app,
             "QPushButton { background: rgba(255, 255, 255, 15); border: 1px solid rgba(255, 255, 255, 35); border-radius: 6px; padding: 6px 18px; color: white; } "
             "QPushButton:hover { background: rgba(255, 255, 255, 30); } "
           ));
+          dialog->setProperty("_glass_fixing_active", false);
         }
       }
       
@@ -640,34 +658,7 @@ MainWindow::MainWindow(Application *app,
   ui_->forward_button->setToolButtonStyle(Qt::ToolButtonIconOnly);
   ui_->button_love->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-  // Global glass style
-  setStyleSheet(QStringLiteral(
-    "QWidget#centralWidget { background: transparent; } "
-    "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
-    "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
-    "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
-    "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
-    "QMenu::item:selected { background: rgba(255,255,255,30); } "
-    "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
-    "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
-    "QTreeView, QListView, QTableView { background: transparent; border: none; alternate-background-color: rgba(255, 255, 255, 10); } "
-    "FancyTabWidget, FancyTabBar, QTabBar { background: transparent; } "
-    "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent; } "
-    "QFrame { background: transparent; border: none; } "
-    "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView { background: transparent; border: none; } "
-    "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
-    "QHeaderView { background: transparent; border: none; } "
-    "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
-    "QToolButton { background: transparent; border: none; padding: 4px; color: white; } "
-    "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
-    "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
-    "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
-    "QToolButton#stop_button { padding-right: 22px; } "
-    "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
-    "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
-    "QTextEdit, ResizableTextEdit { background: transparent; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
-    "QWidget#player_controls, PlayingWidget { background: rgba(30, 30, 35, 120); border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40); } "
-  ));
+  ApplyGlassStyle();
 
   track_position_timer_->setInterval(kTrackPositionUpdateTimeMs);
   QObject::connect(track_position_timer_, &QTimer::timeout, this, &MainWindow::UpdateTrackPosition);
@@ -1976,6 +1967,82 @@ void MainWindow::closeEvent(QCloseEvent *e) {
 
 }
 
+void MainWindow::ApplyGlassStyle() {
+  // Attributes enforcement (immediate)
+  setAttribute(Qt::WA_TranslucentBackground, true);
+  setAttribute(Qt::WA_NoSystemBackground, true);
+  setAttribute(Qt::WA_OpaquePaintEvent, false);
+  setAutoFillBackground(false);
+  
+  if (ui_->centralWidget) {
+    ui_->centralWidget->setAttribute(Qt::WA_TranslucentBackground, true);
+    ui_->centralWidget->setAutoFillBackground(false);
+    ui_->centralWidget->setStyleSheet(u"background: transparent !important;"_s);
+  }
+
+  // Target the playlist specifically and immediately to avoid theme overrides
+  if (ui_->playlist) {
+    ui_->playlist->setStyleSheet(u"#playlist, QTreeView, QListView { background: transparent !important; alternate-background-color: rgba(255, 255, 255, 10) !important; border: none !important; }"_s);
+    if (ui_->playlist->view()) {
+      ui_->playlist->view()->setStyleSheet(u"background: transparent !important; alternate-background-color: rgba(255, 255, 255, 10) !important; border: none !important;"_s);
+    }
+  }
+
+  if (property("_glass_fixing_active").toBool()) return;
+  setProperty("_glass_fixing_active", true);
+
+  // Schedule a thorough fix and clear the guard after it finishes
+  // 1000ms delay to ensure we definitely override StyleSheetLoader and theme engine settling
+  QTimer::singleShot(1000, this, [this]() {
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setAttribute(Qt::WA_OpaquePaintEvent, false);
+    setAutoFillBackground(false);
+
+    if (ui_->centralWidget) {
+      ui_->centralWidget->setAttribute(Qt::WA_TranslucentBackground, true);
+      ui_->centralWidget->setAutoFillBackground(false);
+    }
+
+    // Force re-application of the global style with high specificity and !important
+    setStyleSheet(QStringLiteral(
+      "MainWindow { background: transparent !important; } "
+      "QWidget#centralWidget { background: transparent !important; } "
+      "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
+      "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
+      "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
+      "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
+      "QMenu::item:selected { background: rgba(255,255,255,30); } "
+      "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
+      "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
+      "QTreeView, QListView, QTableView, #playlist { background: transparent !important; border: none; alternate-background-color: rgba(255, 255, 255, 10) !important; } "
+      "FancyTabWidget, FancyTabBar, QTabBar { background: transparent !important; } "
+      "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent !important; } "
+      "QFrame { background: transparent !important; border: none; } "
+      "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView { background: transparent !important; border: none; } "
+      "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
+      "QHeaderView { background: transparent !important; border: none; } "
+      "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
+      "QToolButton { background: transparent !important; border: none; padding: 4px; color: white; } "
+      "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
+      "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
+      "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
+      "QToolButton#stop_button { padding-right: 22px; } "
+      "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
+      "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
+      "QTextEdit, ResizableTextEdit { background: transparent !important; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
+      "QWidget#player_controls, PlayingWidget { background: rgba(30, 30, 35, 120); border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40); } "
+    ));
+
+    update();
+    
+    // Clear the guard after a safe interval
+    QTimer::singleShot(2000, this, [this]() {
+      setProperty("_glass_fixing_active", false);
+    });
+  });
+}
+
 void MainWindow::changeEvent(QEvent *e) {
 
   if (e->type() == QEvent::Show || e->type() == QEvent::WindowStateChange || e->type() == QEvent::WindowActivate) {
@@ -1983,8 +2050,7 @@ void MainWindow::changeEvent(QEvent *e) {
   }
 
   if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::StyleChange) {
-    setAttribute(Qt::WA_TranslucentBackground, true);
-    update();
+    ApplyGlassStyle();
   }
 
   QMainWindow::changeEvent(e);

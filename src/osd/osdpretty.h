@@ -91,6 +91,7 @@ class OSDPretty : public QWidget {
 
   // QWidget
   void setVisible(bool visible) override;
+  void changeEvent(QEvent *e) override;
 
   bool toggle_mode() const { return toggle_mode_; }
   void set_toggle_mode(const bool toggle_mode) { toggle_mode_ = toggle_mode; }

@@ -64,6 +64,7 @@ class AnalyzerBase : public QWidget {
   explicit AnalyzerBase(QWidget *parent, const uint scope_size = 7);
 
   void hideEvent(QHideEvent *e) override;
+  void changeEvent(QEvent *e) override;
   void showEvent(QShowEvent *e) override;
   void paintEvent(QPaintEvent *e) override;
   void timerEvent(QTimerEvent *e) override;

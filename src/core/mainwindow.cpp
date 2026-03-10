@@ -546,7 +546,8 @@ MainWindow::MainWindow(Application *app,
       }
 
       // On Polish, configure the scrollbar widget
-      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show) {
+      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show || ev->type() == QEvent::PaletteChange || 
+          ev->type() == QEvent::ApplicationPaletteChange || ev->type() == QEvent::StyleChange) {
         if (QScrollBar *sb = qobject_cast<QScrollBar*>(obj)) {
           sb->setAutoFillBackground(false);
           sb->setAttribute(Qt::WA_OpaquePaintEvent, false);
@@ -579,15 +580,17 @@ MainWindow::MainWindow(Application *app,
   // Setup Glass Styling & Transparency Filter (applied once)
   struct GlassDialogFilter : public QObject {
     bool eventFilter(QObject *obj, QEvent *ev) override {
-      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show || ev->type() == QEvent::ChildAdded) {
+      if (ev->type() == QEvent::Polish || ev->type() == QEvent::Show || ev->type() == QEvent::ChildAdded || 
+          ev->type() == QEvent::PaletteChange || ev->type() == QEvent::ApplicationPaletteChange || ev->type() == QEvent::StyleChange) {
         if (QDialog *dialog = qobject_cast<QDialog*>(obj)) {
           dialog->setAttribute(Qt::WA_TranslucentBackground, true);
           dialog->setAttribute(Qt::WA_NoSystemBackground, true);
           dialog->setAttribute(Qt::WA_OpaquePaintEvent, false);
           dialog->setAutoFillBackground(false);
           
-          if (ev->type() == QEvent::Show) {
-            // Linux quirk: Delay slightly to ensure attributes stick after window creation
+          if (ev->type() == QEvent::Show || ev->type() == QEvent::PaletteChange || 
+              ev->type() == QEvent::ApplicationPaletteChange || ev->type() == QEvent::StyleChange) {
+            // Linux quirk: Delay slightly to ensure attributes stick after window creation or style change
             QTimer::singleShot(1, dialog, [dialog]() {
               dialog->setAttribute(Qt::WA_TranslucentBackground, true);
               dialog->update();
@@ -1977,6 +1980,11 @@ void MainWindow::changeEvent(QEvent *e) {
 
   if (e->type() == QEvent::Show || e->type() == QEvent::WindowStateChange || e->type() == QEvent::WindowActivate) {
     CheckShowErrorDialog();
+  }
+
+  if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::StyleChange) {
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    update();
   }
 
   QMainWindow::changeEvent(e);

@@ -74,6 +74,14 @@ void AnalyzerBase::showEvent(QShowEvent *e) {
   timer_.start(timeout(), this);
 }
 
+void AnalyzerBase::changeEvent(QEvent *e) {
+  if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::StyleChange) {
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    update();
+  }
+  QWidget::changeEvent(e);
+}
+
 void AnalyzerBase::hideEvent(QHideEvent *e) {
   Q_UNUSED(e)
   timer_.stop();

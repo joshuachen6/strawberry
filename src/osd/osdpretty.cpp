@@ -414,6 +414,14 @@ void OSDPretty::FaderFinished() {
 
 }
 
+void OSDPretty::changeEvent(QEvent *e) {
+  if (e->type() == QEvent::PaletteChange || e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::StyleChange) {
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    update();
+  }
+  QWidget::changeEvent(e);
+}
+
 void OSDPretty::FaderValueChanged(const qreal value) {
   setWindowOpacity(value);
 }

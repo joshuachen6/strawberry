@@ -28,6 +28,7 @@
 
 DeviceViewContainer::DeviceViewContainer(QWidget *parent) : QWidget(parent), ui_(new Ui_DeviceViewContainer) {
   ui_->setupUi(this);
+  setFocusProxy(ui_->view);
 }
 
 DeviceViewContainer::~DeviceViewContainer() { delete ui_; }

@@ -146,6 +146,18 @@ PlaylistView::PlaylistView(QWidget *parent)
   setMouseTracking(true);
   setAlternatingRowColors(true);
   setAttribute(Qt::WA_MacShowFocusRect, false);
+
+  // Swap active and inactive highlight colors using application defaults
+  QPalette p = palette();
+  QPalette app_p = QApplication::palette();
+
+  p.setColor(QPalette::Active, QPalette::Highlight, app_p.color(QPalette::Inactive, QPalette::Highlight));
+  p.setColor(QPalette::Active, QPalette::HighlightedText, app_p.color(QPalette::Inactive, QPalette::HighlightedText));
+  p.setColor(QPalette::Inactive, QPalette::Highlight, app_p.color(QPalette::Active, QPalette::Highlight));
+  p.setColor(QPalette::Inactive, QPalette::HighlightedText, app_p.color(QPalette::Active, QPalette::HighlightedText));
+
+  setPalette(p);
+
 #ifdef Q_OS_MACOS
   setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 #endif

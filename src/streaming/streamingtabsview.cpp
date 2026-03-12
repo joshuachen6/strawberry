@@ -54,6 +54,7 @@ StreamingTabsView::StreamingTabsView(const StreamingServicePtr service, const Sh
       ui_(new Ui_StreamingTabsView) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->tabs);
 
   ui_->search_view->Init(service, albumcover_loader);
   QObject::connect(ui_->search_view, &StreamingSearchView::AddArtistsSignal, &*service_, &StreamingService::AddArtists);

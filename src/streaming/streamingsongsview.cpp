@@ -48,6 +48,7 @@ StreamingSongsView::StreamingSongsView(const StreamingServicePtr service, const 
       ui_(new Ui_StreamingCollectionViewContainer) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->view);
 
   ui_->stacked->setCurrentWidget(ui_->streamingcollection_page);
   ui_->view->Init(service_->songs_collection_backend(), service_->songs_collection_model(), false);

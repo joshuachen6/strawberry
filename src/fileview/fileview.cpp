@@ -375,6 +375,7 @@ void FileView::UpdateViewModeUI() {
 
   if (tree_view_active_) {
     ui_->view_stack->setCurrentWidget(ui_->tree_page);
+    setFocusProxy(ui_->tree);
     // Hide navigation controls in tree view mode
     ui_->back->setVisible(false);
     ui_->forward->setVisible(false);
@@ -392,6 +393,7 @@ void FileView::UpdateViewModeUI() {
   }
   else {
     ui_->view_stack->setCurrentWidget(ui_->list_page);
+    setFocusProxy(ui_->list);
     // Show navigation controls in list view mode
     ui_->back->setVisible(true);
     ui_->forward->setVisible(true);

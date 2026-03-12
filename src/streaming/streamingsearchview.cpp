@@ -112,6 +112,7 @@ StreamingSearchView::StreamingSearchView(QWidget *parent)
       searches_next_id_(1) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->search);
 
   ui_->search->installEventFilter(this);
   ui_->results_stack->installEventFilter(this);

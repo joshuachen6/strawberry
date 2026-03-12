@@ -34,6 +34,7 @@ RadioViewContainer::RadioViewContainer(QWidget *parent)
       ui_(new Ui_RadioViewContainer) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->view);
 
   QObject::connect(ui_->refresh, &QToolButton::clicked, this, &RadioViewContainer::Refresh);
 

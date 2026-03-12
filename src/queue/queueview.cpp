@@ -54,6 +54,7 @@ QueueView::QueueView(QWidget *parent)
       current_playlist_(nullptr) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->list);
   ui_->list->setItemDelegate(new QueuedItemDelegate(this, 0));
 
   // Set icons on buttons

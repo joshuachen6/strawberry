@@ -35,6 +35,7 @@ StreamingCollectionViewContainer::StreamingCollectionViewContainer(QWidget *pare
       ui_(new Ui_StreamingCollectionViewContainer) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->view);
   ui_->view->SetFilter(ui_->filter_widget);
 
   QObject::connect(ui_->filter_widget, &CollectionFilterWidget::UpPressed, ui_->view, &StreamingCollectionView::UpAndFocus);

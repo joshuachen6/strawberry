@@ -83,6 +83,7 @@ PlaylistListContainer::PlaylistListContainer(QWidget *parent)
 
   ui_->setupUi(this);
   ui_->tree->setAttribute(Qt::WA_MacShowFocusRect, false);
+  setFocusProxy(ui_->tree);
 
   action_new_folder_->setText(tr("New folder"));
   action_remove_->setText(tr("Delete"));

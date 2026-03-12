@@ -69,6 +69,7 @@ SmartPlaylistsViewContainer::SmartPlaylistsViewContainer(const SharedPtr<Player>
       action_add_to_playlist_enqueue_next_(nullptr) {
 
   ui_->setupUi(this);
+  setFocusProxy(ui_->view);
 
   model_ = new SmartPlaylistsModel(collection_backend, this);
   ui_->view->setModel(model_);

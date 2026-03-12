@@ -285,8 +285,11 @@ void FancyTabWidget::SetCurrentIndex(int idx) {
 void FancyTabWidget::CurrentTabChangedSlot(const int idx) {
 
   QWidget *currentPage = currentWidget();
-  QLayout *layout = currentPage->layout();
-  if (bottom_widget_) layout->addWidget(bottom_widget_);
+  if (currentPage) {
+    QLayout *layout = currentPage->layout();
+    if (layout && bottom_widget_) layout->addWidget(bottom_widget_);
+    currentPage->setFocus();
+  }
 
   Q_EMIT CurrentTabChanged(idx);
 

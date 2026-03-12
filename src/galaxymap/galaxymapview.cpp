@@ -151,6 +151,7 @@ GalaxyMapView::GalaxyMapView(Application *app, QWidget *parent)
       deep_embedding_scan_once_(false),
       lyrics_fetcher_(new LyricsFetcher(app->lyrics_providers(), this)) {
   setMouseTracking(true);
+  setFocusPolicy(Qt::StrongFocus);
   setAttribute(Qt::WA_OpaquePaintEvent);
   setMinimumSize(200, 200);
 

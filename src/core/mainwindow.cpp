@@ -1172,7 +1172,7 @@ MainWindow::MainWindow(Application *app,
   PlayingWidgetPositionChanged(ui_->widget_playing->show_above_status_bar());
 
   StyleSheetLoader *css_loader = new StyleSheetLoader(this);
-  css_loader->SetStyleSheet(this, u":/style/strawberry.css"_s);
+  // css_loader->SetStyleSheet(this, u":/style/strawberry.css"_s);
 
   // Load playlists
   app_->playlist_manager()->Init(ui_->playlist_sequence, ui_->playlist);
@@ -1988,12 +1988,48 @@ void MainWindow::ApplyGlassStyle() {
     }
   }
 
+  // Define the comprehensive glass style
+  const QString glass_style = QStringLiteral(
+    "MainWindow { background: transparent !important; } "
+    "QWidget#centralWidget { background: transparent !important; } "
+    "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
+    "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
+    "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
+    "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
+    "QMenu::item:selected { background: rgba(255,255,255,30); } "
+    "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
+    "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
+    "QTreeView, QListView, QTableView, #playlist { background: transparent !important; border: none; alternate-background-color: rgba(255, 255, 255, 10) !important; } "
+    "FancyTabWidget, FancyTabBar, QTabBar { background: transparent !important; } "
+    "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent !important; } "
+    "QFrame#player_controls { background: rgba(30, 30, 35, 120) !important; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40) !important; } "
+    "QFrame { background: transparent !important; border: none; } "
+    "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView, QWidget#player_controls_container, QWidget#sidebar_layout, QWidget#playlist_layout { background: transparent !important; border: none; } "
+    "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
+    "QHeaderView { background: transparent !important; border: none; } "
+    "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
+    "QToolButton { background: transparent !important; border: none; padding: 4px; color: white; } "
+    "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
+    "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
+    "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
+    "QToolButton#stop_button { padding-right: 22px; } "
+    "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
+    "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
+    "QTextEdit, ResizableTextEdit { background: transparent !important; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
+    "PlayingWidget { background: rgba(30, 30, 35, 120) !important; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40) !important; } "
+  );
+
   if (property("_glass_fixing_active").toBool()) return;
   setProperty("_glass_fixing_active", true);
 
+  // Apply immediately but inside the guard to avoid infinite recursion from changeEvent
+  if (styleSheet() != glass_style) {
+    setStyleSheet(glass_style);
+  }
+
   // Schedule a thorough fix and clear the guard after it finishes
   // 1000ms delay to ensure we definitely override StyleSheetLoader and theme engine settling
-  QTimer::singleShot(1000, this, [this]() {
+  QTimer::singleShot(1000, this, [this, glass_style]() {
     setAttribute(Qt::WA_TranslucentBackground, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_OpaquePaintEvent, false);
@@ -2004,35 +2040,8 @@ void MainWindow::ApplyGlassStyle() {
       ui_->centralWidget->setAutoFillBackground(false);
     }
 
-    // Force re-application of the global style with high specificity and !important
-    setStyleSheet(QStringLiteral(
-      "MainWindow { background: transparent !important; } "
-      "QWidget#centralWidget { background: transparent !important; } "
-      "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
-      "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
-      "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
-      "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
-      "QMenu::item:selected { background: rgba(255,255,255,30); } "
-      "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
-      "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
-      "QTreeView, QListView, QTableView, #playlist { background: transparent !important; border: none; alternate-background-color: rgba(255, 255, 255, 10) !important; } "
-      "FancyTabWidget, FancyTabBar, QTabBar { background: transparent !important; } "
-      "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent !important; } "
-      "QFrame { background: transparent !important; border: none; } "
-      "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView { background: transparent !important; border: none; } "
-      "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
-      "QHeaderView { background: transparent !important; border: none; } "
-      "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
-      "QToolButton { background: transparent !important; border: none; padding: 4px; color: white; } "
-      "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
-      "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
-      "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
-      "QToolButton#stop_button { padding-right: 22px; } "
-      "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
-      "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
-      "QTextEdit, ResizableTextEdit { background: transparent !important; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
-      "QWidget#player_controls, PlayingWidget { background: rgba(30, 30, 35, 120); border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40); } "
-    ));
+    // Force re-application of the global style
+    setStyleSheet(glass_style);
 
     update();
     
@@ -3618,12 +3627,7 @@ void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) 
   Q_UNUSED(song);
   if (image.isNull()) {
     window_background_pixmap_ = QPixmap();
-    ui_->player_controls->setGraphicsEffect(nullptr);
-    ui_->widget_playing->setGraphicsEffect(nullptr);
-    bloom_player_controls_ = nullptr;
-    bloom_playing_widget_ = nullptr;
     update();
-    // Re-apply style even here to maintain transparency
   } else {
     QSize target_size(1024, 1024);
     QImage scaled_image = image.scaled(target_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
@@ -3646,63 +3650,11 @@ void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) 
     blur_painter.end();
     
     window_background_pixmap_ = QPixmap::fromImage(blurred);
-    
-    // Bloom effect logic: update existing objects or create them efficiently
-    QImage scaled1x1 = image.scaled(1, 1, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    if (!scaled1x1.isNull()) {
-        QColor avg_color = scaled1x1.pixelColor(0, 0);
-        int h = 0, s = 0, v = 0;
-        avg_color.getHsv(&h, &s, &v);
-        // Ensure valid HSV ranges and handle grayscale case (-1 hue)
-        h = qBound(0, (h < 0 ? 0 : h), 359);
-        s = qBound(0, s + 100, 255);
-        v = qBound(0, qMax(180, v + 50), 255);
-        QColor bloom_color = QColor::fromHsv(h, s, v);
-
-        auto update_bloom = [bloom_color](QWidget *target, QGraphicsDropShadowEffect **effect_ptr) {
-            if (!*effect_ptr) {
-                *effect_ptr = new QGraphicsDropShadowEffect(target);
-                (*effect_ptr)->setBlurRadius(30);
-                (*effect_ptr)->setOffset(0, 0);
-                target->setGraphicsEffect(*effect_ptr);
-            }
-            (*effect_ptr)->setColor(bloom_color);
-        };
-
-        update_bloom(ui_->player_controls, &bloom_player_controls_);
-        update_bloom(ui_->widget_playing, &bloom_playing_widget_);
-    }
   }
 
 
   // Re-apply global glass style every time to ensure transparency persists
-  setStyleSheet(QStringLiteral(
-    "QWidget#centralWidget { background: transparent; } "
-    "QMenuBar { background: rgba(20, 20, 25, 180); border-bottom: 1px solid rgba(255,255,255,20); } "
-    "QMenuBar::item { background: transparent; color: white; padding: 4px 10px; } "
-    "QMenuBar::item:selected { background: rgba(255,255,255,30); } "
-    "QMenu { background: rgba(25, 25, 30, 220); border: 1px solid rgba(255,255,255,30); color: white; } "
-    "QMenu::item:selected { background: rgba(255,255,255,30); } "
-    "QToolBar { background: rgba(20, 20, 25, 160); border: none; spacing: 2px; } "
-    "QSplitter::handle { background: rgba(255, 255, 255, 25); width: 1px; } "
-    "QTreeView, QListView, QTableView { background: transparent; border: none; alternate-background-color: rgba(255, 255, 255, 10); } "
-    "FancyTabWidget, FancyTabBar, QTabBar { background: transparent; } "
-    "QueueView, SmartPlaylistsViewContainer, PlaylistListContainer { background: transparent; } "
-    "QFrame { background: transparent; border: none; } "
-    "PlaylistListContainer, CollectionView, CollectionFilter, ContextView, DeviceView, FileView { background: transparent; border: none; } "
-    "QLineEdit { background: rgba(255, 255, 255, 30); border: 1px solid rgba(255, 255, 255, 50); border-radius: 4px; padding: 2px; } "
-    "QHeaderView { background: transparent; border: none; } "
-    "QHeaderView::section { background: rgba(255, 255, 255, 20); color: white; border: none; padding: 4px; border-right: 1px solid rgba(255, 255, 255, 10); } "
-    "QToolButton { background: transparent; border: none; padding: 4px; color: white; } "
-    "QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; } "
-    "QToolButton:pressed { background: rgba(255, 255, 255, 50); border-radius: 4px; } "
-    "QToolButton::menu-button { border: none; width: 22px; background: transparent; } "
-    "QToolButton#stop_button { padding-right: 22px; } "
-    "QPushButton:hover { background: rgba(255, 255, 255, 40); } "
-    "QDialog QPushButton { background: rgba(255, 255, 255, 40); border-radius: 4px; } "
-    "QTextEdit, ResizableTextEdit { background: transparent; border: none; color: rgba(255, 255, 255, 180); padding: 0px; margin: 0px; } "
-    "QWidget#player_controls, PlayingWidget { background: rgba(30, 30, 35, 120); border-radius: 10px; border: 1px solid rgba(255, 255, 255, 40); } "
-  ));
+  ApplyGlassStyle();
 
   update();
 }
@@ -3757,15 +3709,9 @@ void MainWindow::paintEvent(QPaintEvent *e) {
   Q_UNUSED(e);
   QPainter p(this);
   
-  // Clear background with semi-transparent base for glass effect
+  // Use consistent semi-transparent background for both states to prevent UI "jumping"
   p.setCompositionMode(QPainter::CompositionMode_Source);
-  if (window_background_pixmap_.isNull()) {
-    // Frosted glass look when no song is playing
-    p.fillRect(rect(), QColor(26, 26, 31, 225)); 
-  } else {
-    // Transparent glass depth when playing
-    p.fillRect(rect(), QColor(10, 10, 15, 140));
-  }
+  p.fillRect(rect(), QColor(26, 26, 31, 225));
   p.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
   if (!window_background_pixmap_.isNull()) {
@@ -3787,8 +3733,10 @@ void MainWindow::paintEvent(QPaintEvent *e) {
     
     QRect sourceRect(xOffset, yOffset, drawWidth, drawHeight);
 
-    // 1. Draw blurred background deeply darkened
+    // Draw blurred background with partial opacity so it doesn't make the UI fully opaque
+    p.setOpacity(0.6);
     p.drawPixmap(rect(), window_background_pixmap_, sourceRect);
+    p.setOpacity(1.0);
     
     // Gradient overlay for better text contrast
     QLinearGradient grad(0, 0, 0, height());

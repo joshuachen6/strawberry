@@ -115,7 +115,8 @@ GstEngine::GstEngine(SharedPtr<TaskManager> task_manager, QObject *parent)
       discovery_discovered_cb_id_(-1),
       delayed_state_(State::Empty),
       delayed_state_pause_(false),
-      delayed_state_offset_nanosec_(0) {
+      delayed_state_offset_nanosec_(0),
+      gapless_transition_active_(false) {
 
   seek_timer_->setSingleShot(true);
   seek_timer_->setInterval(kSeekDelayNanosec / kNsecPerMsec);
@@ -204,6 +205,10 @@ bool GstEngine::Load(const QUrl &media_url, const QUrl &stream_url, const Engine
 
   bool crossfade = current_pipeline_ && ((crossfade_enabled_ && change & EngineBase::TrackChangeType::Manual) || (autocrossfade_enabled_ && change & EngineBase::TrackChangeType::Auto) || ((crossfade_enabled_ || autocrossfade_enabled_) && change & EngineBase::TrackChangeType::Intro));
 
+  if (current_pipeline_ && current_pipeline_->stream_url() == stream_url) {
+    crossfade = false;
+  }
+
   if (change & EngineBase::TrackChangeType::Auto && change & EngineBase::TrackChangeType::SameAlbum && !crossfade_same_album_) {
     crossfade = false;
   }
@@ -213,6 +218,7 @@ bool GstEngine::Load(const QUrl &media_url, const QUrl &stream_url, const Engine
     if (current_pipeline_->stream_url() == stream_url) {
       // We're not crossfading, and the pipeline is already playing the URI we want, so just do nothing.
       current_pipeline_->SetEBUR128LoudnessNormalizingGain_dB(ebur128_loudness_normalizing_gain_db_);
+      about_to_end_emitted_ = false;
       return true;
     }
   }
@@ -274,6 +280,16 @@ bool GstEngine::Play(const bool pause, const quint64 offset_nanosec) {
   if (!current_pipeline_ || current_pipeline_->is_buffering()) {
     return false;
   }
+
+  // Handle gapless transition: track already started playing, so don't seek or pause
+  if (gapless_transition_active_ && !pause && offset_nanosec == 0 && beginning_offset_nanosec_ == 0) {
+    qLog(Debug) << "Gapless transition active, skipping redundant Play/Seek";
+    gapless_transition_active_ = false;
+    about_to_end_emitted_ = false;
+    PlayDone(GST_STATE_CHANGE_SUCCESS, false, 0, current_pipeline_->id());
+    return true;
+  }
+  gapless_transition_active_ = false;
 
   if (current_pipeline_->state() == GstState::GST_STATE_PLAYING) {
     if (offset_nanosec != 0 || beginning_offset_nanosec_ != 0) {
@@ -625,7 +641,10 @@ void GstEngine::EndOfStreamReached(const int pipeline_id, const bool has_next_tr
     return;
   }
 
-  if (!has_next_track) {
+  if (has_next_track) {
+    gapless_transition_active_ = true;
+  }
+  else {
     GstEnginePipelinePtr old_pipeline = current_pipeline_;
     FinishPipeline(old_pipeline);
     current_pipeline_ = GstEnginePipelinePtr();

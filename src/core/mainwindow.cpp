@@ -80,6 +80,8 @@
 #  include <QDBusMessage>
 #endif
 
+#include <QtConcurrent/QtConcurrent>
+
 #include "core/logging.h"
 
 #include "mainwindow.h"
@@ -1246,6 +1248,11 @@ MainWindow::MainWindow(Application *app,
   // Reload playlist settings, for BG and glowing
   ui_->playlist->view()->ReloadSettings();
 
+  QObject::connect(&background_blur_watcher_, &QFutureWatcher<QPixmap>::finished, this, [this]() {
+    window_background_pixmap_ = background_blur_watcher_.result();
+    update();
+  });
+
 #ifdef Q_OS_MACOS  // Always show the mainwindow on startup for macOS
   show();
 #else
@@ -1771,10 +1778,16 @@ void MainWindow::SongChanged(const Song &song) {
 
   qLog(Debug) << "Song changed to" << song.artist() << song.album() << song.PrettyTitle();
 
+  bool metadata_changed = (song.artist() != song_playing_.artist() || song.album() != song_playing_.album() || song.title() != song_playing_.title());
+
   song_playing_ = song;
   song_ = song;
-  setWindowTitle(song.PrettyTitleWithArtist());
-  ui_->rating->set_rating(song.rating());
+
+  if (metadata_changed) {
+    setWindowTitle(song.PrettyTitleWithArtist());
+    ui_->rating->set_rating(song.rating());
+  }
+  
   systemtrayicon_->SetProgress(0);
 
 #ifdef HAVE_DBUS
@@ -1784,6 +1797,8 @@ void MainWindow::SongChanged(const Song &song) {
 #endif
 
   SendNowPlaying();
+
+  if (!metadata_changed) return;
 
   const bool enable_change_art = song.is_local_collection_song() && !song.effective_albumartist().isEmpty() && !song.album().isEmpty();
   album_cover_choice_controller_->show_cover_action()->setEnabled(song.has_valid_art() && !song.art_unset());
@@ -2027,28 +2042,9 @@ void MainWindow::ApplyGlassStyle() {
     setStyleSheet(glass_style);
   }
 
-  // Schedule a thorough fix and clear the guard after it finishes
-  // 1000ms delay to ensure we definitely override StyleSheetLoader and theme engine settling
-  QTimer::singleShot(1000, this, [this, glass_style]() {
-    setAttribute(Qt::WA_TranslucentBackground, true);
-    setAttribute(Qt::WA_NoSystemBackground, true);
-    setAttribute(Qt::WA_OpaquePaintEvent, false);
-    setAutoFillBackground(false);
-
-    if (ui_->centralWidget) {
-      ui_->centralWidget->setAttribute(Qt::WA_TranslucentBackground, true);
-      ui_->centralWidget->setAutoFillBackground(false);
-    }
-
-    // Force re-application of the global style
-    setStyleSheet(glass_style);
-
-    update();
-    
-    // Clear the guard after a safe interval
-    QTimer::singleShot(2000, this, [this]() {
-      setProperty("_glass_fixing_active", false);
-    });
+  // Clear the guard after a safe interval to allow legitimate style changes later
+  QTimer::singleShot(2000, this, [this]() {
+    setProperty("_glass_fixing_active", false);
   });
 }
 
@@ -2123,14 +2119,15 @@ void MainWindow::UpdateTrackPosition() {
   if (length <= 0) return;
   const int position = std::floor(static_cast<float>(app_->player()->engine()->position_nanosec()) / static_cast<float>(kNsecPerSec) + 0.5);
 
-  // Update the tray icon every 10 seconds
-  if (position % 10 == 0) systemtrayicon_->SetProgress(static_cast<int>(static_cast<double>(position) / static_cast<double>(length) * 100.0));
-
+  // Update the tray icon and taskbar every 10 seconds
+  if (position % 10 == 0) {
+    systemtrayicon_->SetProgress(static_cast<int>(static_cast<double>(position) / static_cast<double>(length) * 100.0));
 #ifdef HAVE_DBUS
-  if (taskbar_progress_) {
-    UpdateTaskbarProgress(true, static_cast<double>(position) / static_cast<double>(length));
-  }
+    if (taskbar_progress_) {
+      UpdateTaskbarProgress(true, static_cast<double>(position) / static_cast<double>(length));
+    }
 #endif
+  }
 
   // Send Scrobble
   if (app_->scrobbler()->enabled() && item->EffectiveMetadata().is_metadata_good()) {
@@ -3625,10 +3622,22 @@ void MainWindow::AlbumCoverLoaded(const Song &song, const AlbumCoverLoaderResult
 
 void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) {
   Q_UNUSED(song);
+  
   if (image.isNull()) {
+    last_blurred_image_ = QImage();
     window_background_pixmap_ = QPixmap();
     update();
-  } else {
+    return;
+  }
+
+  // Skip expensive blur processing if the image hasn't changed (common during loops)
+  if (!last_blurred_image_.isNull() && image.cacheKey() == last_blurred_image_.cacheKey()) {
+    return;
+  }
+  last_blurred_image_ = image;
+
+  // Run heavy blur in background thread
+  QFuture<QPixmap> future = QtConcurrent::run([image]() {
     QSize target_size(1024, 1024);
     QImage scaled_image = image.scaled(target_size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
     
@@ -3649,14 +3658,13 @@ void MainWindow::UpdateBlurredBackground(const Song &song, const QImage &image) 
     blur_painter.fillRect(blurred.rect(), QColor(10, 10, 15, 80)); 
     blur_painter.end();
     
-    window_background_pixmap_ = QPixmap::fromImage(blurred);
-  }
+    return QPixmap::fromImage(blurred);
+  });
+  
+  background_blur_watcher_.setFuture(future);
 
-
-  // Re-apply global glass style every time to ensure transparency persists
+  // Re-apply global glass style immediately to ensure transparency persists during transition
   ApplyGlassStyle();
-
-  update();
 }
 
 

@@ -31,6 +31,8 @@
 #include <QWidget>
 #include <QMainWindow>
 #include <QSystemTrayIcon>
+#include <QFutureWatcher>
+#include <QPixmap>
 #include <QSortFilterProxyModel>
 #include <QAbstractItemModel>
 #include <QPersistentModelIndex>
@@ -417,6 +419,8 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   Song song_playing_;
   AlbumCoverImageResult album_cover_;
   QPixmap window_background_pixmap_;
+  QImage last_blurred_image_;
+  QFutureWatcher<QPixmap> background_blur_watcher_;
   QString active_lyric_;
   QString previous_lyric_;
   double lyric_fade_{1.0};

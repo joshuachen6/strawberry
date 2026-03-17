@@ -1434,6 +1434,10 @@ void GstEnginePipeline::AboutToFinishCallback(GstPlayBin *playbin, gpointer self
     return;
   }
 
+  if (instance->about_to_finish_.value()) {
+    return;
+  }
+
   {
     QMutexLocker l(&instance->mutex_url_);
     qLog(Debug) << "Stream from URL" << instance->gst_url_ << "about to finish.";
@@ -1441,7 +1445,8 @@ void GstEnginePipeline::AboutToFinishCallback(GstPlayBin *playbin, gpointer self
 
   // When playing GME files it seems playbin3 emits about-to-finish early
   // This stops us from skipping when the song has just started.
-  if (instance->position() == 0) {
+  // We only ignore it if the track is long enough to suggest it's a buggy early emission.
+  if (instance->position() == 0 && instance->length() > 2 * GST_SECOND) {
     return;
   }
 
@@ -2324,7 +2329,6 @@ void GstEnginePipeline::SetNextUrl() {
       qLog(Debug) << "Setting next URL to" << next_gst_url_;
       g_object_set(G_OBJECT(pipeline_), "uri", next_gst_url_.constData(), nullptr);
     }
-    about_to_finish_ = false;
   }
 
 }
